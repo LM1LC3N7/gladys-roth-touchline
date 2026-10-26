@@ -66,25 +66,51 @@ Safety bounds:
 
 Each command reads the room again right before acting, checks that the
 thermostat answering at that position is the one targeted, and decides on
-that read; it leaves within 3.5 s or is refused without sending anything. The
-controller echoes the value written: that is the confirmation. When the echo
-does not come in time, Gladys shows "sent, without confirmation" and reads the
-room again 5 s and 20 s later. One command at a time, 3 s apart (the
-controller is slow).
+that read; it leaves within 3.5 s or is refused without sending anything.
+The controller echoes the value written, then the room is **read back**: the
+command succeeds only when the value read back is the one asked. When the
+echo comes too late to read back within the Gladys delay, Gladys shows "sent
+and echoed by the controller: checked by a read in a few seconds"; with no
+echo in time, "sent, without confirmation". Either way the room is read
+again 5 s and 20 s later (these reads wait their turn, they are never
+skipped). When a read back contradicts the echo, the command is told
+"without effect" in the status of the integration, the log and the badge of
+the room, until the next read. A read made before a write is never
+published after it.
 
-A command is refused, with nothing sent, in these cases: option off; value
-out of bounds, not a tenth of a degree, or unknown mode/program; room unknown
-or another thermostat at its position; reads of the controller paused after
-failures; controller too slow; setpoint limits unreadable; another command
-running or too recent.
+Commands wait their turn in a queue (8 at most), one write at a time, 0.5 s
+after the answer of the previous one; each keeps its 3.5 s from its arrival.
+A scene setting several rooms one after the other sets them all; a scene
+setting them at the same time sets a few in a row (6 at most with a fast
+controller, fewer with a slow one): beyond, or when a room answers "not sent
+in time", leave about 4 s between two rooms.
+
+A command is refused, with nothing sent, in these cases: configuration of
+the integration not loaded yet; option off; value out of bounds, not a tenth
+of a degree, or unknown mode/program; 8 commands already waiting; reads of
+the controller paused after failures; room unknown; no thermostat or another
+thermostat at its position; current state unreadable (fresh read failed or
+invalid answer); setpoint limits unreadable or inconsistent; address or
+option changed during the command; controller too slow, a read in progress
+too long, or too many commands before it to leave in time; connection
+refused before sending ("command not sent" and the reason). A write that
+left may also come back "the controller refused the command" (a 4xx
+answer).
 
 ## Limits and safety
 
 - A read every 60 s (30 s to 10 min), every room in turn, one request at a
-  time; a room that does not answer leaves the others read; a read starts
-  no new room past 45 s, the rest waits for the next one. Never two reads
+  time; a room that does not answer leaves the others read; when all fail,
+  the read failed (pause below). A read starts no new room past 45 s (and
+  never past the interval minus 10 s); the next one starts at the first room
+  left unread, so none is forgotten. The controller rests at least half an
+  interval between two reads. Never two reads
   within an interval, even across a restart (the time of the last attempt is
-  kept in `/data`).
+  kept in `/data` at each read).
+- Configuration of Gladys unreadable at start: new tries after 5 s, 15 s,
+  1 min, then every 5 min, with a status saying so.
+- A room added or changed in Gladys gets its last values at once only when
+  they are fresh (otherwise at the next read).
 - Controller unreachable: a pause of 1, 2, 5, 10 then 15 min (never under
   the interval), kept in `/data`, for the reads, the button and the commands.
 - `/data` holds neither the address of the controller nor any secret (there

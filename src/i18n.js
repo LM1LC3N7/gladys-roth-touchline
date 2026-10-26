@@ -108,6 +108,17 @@ export const T = {
     "Le régulateur ne connaît aucun appareil (aucun thermostat d'ambiance n'est appairé).",
   ),
   unreadDevices: (list) => both(`Not read: ${list}.`, `Non lus : ${list}.`),
+  andMore: (n) => both(` and ${n} more`, ` et ${n} autres`),
+  configNotRead: (wait) =>
+    both(
+      `The configuration of Gladys could not be read yet. New try in ${wait.en}.`,
+      `La configuration de Gladys n'a pas encore pu être lue. Nouvel essai dans ${wait.fr}.`,
+    ),
+  notApplied: (list) =>
+    both(
+      `Command without effect: ${list.en} (the controller echoed the value, the read back differs).`,
+      `Commande sans effet : ${list.fr} (le régulateur a renvoyé la valeur, la relecture diffère).`,
+    ),
   unreachable: (reason, wait) =>
     both(
       `Controller not read: ${reason.en}. New try in ${wait.en}.`,
@@ -132,6 +143,39 @@ export const T = {
 
 export const ERRORS = {
   readOnly: both('This feature is read only.', 'Cette fonctionnalité est en lecture seule.'),
+  configNotLoaded: both(
+    'The configuration of the integration is not loaded yet: command not sent.',
+    'La configuration de l’intégration n’est pas encore chargée : commande non envoyée.',
+  ),
+  queueFull: (n) =>
+    both(
+      `${n} commands are already waiting: command not sent.`,
+      `${n} commandes attendent déjà : commande non envoyée.`,
+    ),
+  queueLate: (n) =>
+    both(
+      `Not sent in time: ${n} command(s) were waiting before it (wait about 4 s between two rooms).`,
+      `Non envoyée à temps : ${n} commande(s) attendaient avant elle (laissez environ 4 s entre deux pièces).`,
+    ),
+  notSent: (reason) =>
+    both(`Command not sent: ${reason.en}.`, `Commande non envoyée : ${reason.fr}.`),
+  verifyLater: both(
+    'Command sent and echoed by the controller: checked by a read in a few seconds.',
+    'Commande envoyée et renvoyée par le régulateur : vérification par une relecture dans quelques secondes.',
+  ),
+  notAppliedNow: (read, written) =>
+    both(
+      `The controller echoed the value but the read back gives ${read.en} instead of ${written.en}.`,
+      `Le régulateur a renvoyé la valeur mais la relecture donne ${read.fr} au lieu de ${written.fr}.`,
+    ),
+  inconsistentLimits: both(
+    'The setpoint limits of the device are inconsistent (minimum above maximum): command not sent.',
+    'Les limites de consigne de l’appareil sont incohérentes (minimum au-dessus du maximum) : commande non envoyée.',
+  ),
+  noDeviceAtPosition: both(
+    'No thermostat answers at the position of this device now (re-run a scan): command not sent.',
+    'Aucun thermostat ne répond à la position de cet appareil (relancez une recherche) : commande non envoyée.',
+  ),
   setpointsDisabled: both(
     'Setpoint commands are off: allow them in the configuration of the integration.',
     'Les commandes de consigne sont désactivées : autorisez-les dans la configuration de l’intégration.',
@@ -169,8 +213,8 @@ export const ERRORS = {
     'Le régulateur répond trop lentement : commande non envoyée.',
   ),
   busy: both(
-    'A read of the controller is running: command not sent, try again in a few seconds.',
-    'Une lecture du régulateur est en cours : commande non envoyée, réessayez dans quelques secondes.',
+    'A read of the controller was running and the controller answered too slowly: command not sent.',
+    'Une lecture du régulateur était en cours et le régulateur a répondu trop lentement : commande non envoyée.',
   ),
   unknownState: (reason) =>
     both(
@@ -182,8 +226,8 @@ export const ERRORS = {
     'Les limites de consigne de l’appareil n’ont pas pu être lues : commande non envoyée.',
   ),
   unconfirmed: both(
-    'Command sent, without confirmation: the device is read again in a few seconds.',
-    'Commande envoyée, sans confirmation : l’appareil est relu dans quelques secondes.',
+    'Command sent, without confirmation (no echo in time): the device is read again in a few seconds.',
+    'Commande envoyée, sans confirmation (pas de renvoi à temps) : l’appareil est relu dans quelques secondes.',
   ),
   refusedByController: both(
     'The controller refused the command.',

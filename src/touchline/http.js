@@ -52,6 +52,13 @@ export function networkError(err, sent) {
     return err;
   }
   const code = typeof err?.code === 'string' && /^[A-Z_]{1,32}$/.test(err.code) ? err.code : '';
+  if (code.startsWith('HPE_')) {
+    // The parser of Node refused the answer (header too large, not HTTP…): it came, it is not ours.
+    return new TouchlineError('bad_response', 'not the expected HTTP answer', {
+      reason: code,
+      sent,
+    });
+  }
   return new TouchlineError('network', NETWORK_REASONS[code] ?? 'network error', {
     reason: code || undefined,
     sent,
@@ -72,7 +79,8 @@ export function errorReason(err) {
  * status. `deadline`: the monotonic instant by which the answer must be in
  * (a request still waiting then fails `timeout`, `sent: true`); `beforeSend`
  * runs once the socket is connected, right before the request leaves: it
- * may throw to abort with nothing sent (`late`).
+ * may throw to abort with nothing sent (`late`); `onSent` runs once the
+ * request has really left (after the last check of the deadline).
  */
 export function request(
   { hostname, port, method = 'GET', path, body, headers = {} },
@@ -81,6 +89,7 @@ export function request(
     deadline,
     maxBytes = LIMITS.responseBytes,
     beforeSend,
+    onSent,
   } = {},
 ) {
   return new Promise((resolve, reject) => {
@@ -168,6 +177,7 @@ export function request(
           return;
         }
         sent = true;
+        onSent?.();
         req.end(body);
       };
       if (socket.connecting) {

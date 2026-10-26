@@ -110,8 +110,15 @@ export const HOUR = 60 * MINUTE;
 export const TIMINGS = {
   /** One request of the polling (the CGI is slow: the reference waits 10 s). */
   requestTimeout: 10 * SECOND,
-  /** A round (the count, then each device) never lasts longer: the devices left wait for the next. */
+  /**
+   * A round (the count, then each device) starts no new device past this
+   * budget, and never past the interval minus 10 s: the next round starts
+   * at the first device left unread (rotation).
+   */
   roundBudget: 45 * SECOND,
+  roundMargin: 10 * SECOND,
+  /** The controller rests between two rounds: at least half the interval after the end of the previous one. */
+  restShare: 0.5,
   /** Failed rounds: 1, 2, 5, 10, then 15 minutes, never shorter than the interval. */
   backoff: [MINUTE, 2 * MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE],
   /** A pause (backoff) is never longer than this, whatever /data holds. */
@@ -131,11 +138,18 @@ export const TIMINGS = {
    */
   commandSendBy: 3_500,
   commandAnswerBy: 4_300,
-  /** The fresh read of a command: 2.5 s at most, and 0.3 s left to send after it. */
+  /** The fresh read of a command: 2.5 s at most, 0.3 s at least, and 0.3 s left to send after it. */
   commandReadMax: 2_500,
+  commandMinRead: 300,
   commandMinSend: 300,
-  /** Writes are spaced (the CGI is slow): after a write that may have left, the next command waits. */
-  commandSpacing: 3 * SECOND,
-  /** Reads after a command, spaced: its effect, then a check. */
+  /** An echo in by 2.8 s: the value is read back within the 4.3 s of the ack, and compared. */
+  commandConfirmBy: 2_800,
+  /** Writes are spaced (the CGI is slow): from the answer of the previous write (to check on a real controller). */
+  commandSpacing: 500,
+  /** Commands waiting their turn (a scene setting several rooms), served one at a time. */
+  commandQueue: 8,
+  /** Reads after a command, spaced: its effect, then a check; never skipped (they wait their turn). */
   followUps: [5 * SECOND, 20 * SECOND],
+  /** The configuration of Gladys not read at start: new tries 5 s, 15 s, 1 min, then every 5 min. */
+  configRetry: [5 * SECOND, 15 * SECOND, MINUTE, 5 * MINUTE],
 };

@@ -13,7 +13,7 @@
 // items, names made of the characters the controller uses, values cut to a
 // bounded length, entities decoded. Anything else is "not the expected
 // answer". Names of devices may come in Latin-1: a body that is not valid
-// UTF-8 is read as Latin-1.
+// UTF-8 is read as Latin-1. `<v/>` is an empty value (unknown).
 // -----------------------------------------------------------------------------
 
 import { API, LIMITS } from '../constants.js';
@@ -55,11 +55,14 @@ export function decodeEntities(text) {
   });
 }
 
-/** The bytes of an answer as text: UTF-8 when valid, Latin-1 otherwise. */
+/** The bytes of an answer as text: UTF-8 when the bytes are valid UTF-8, Latin-1 otherwise. */
 export function decodeBody(body) {
   const bytes = Buffer.from(body ?? []);
-  const utf8 = bytes.toString('utf8');
-  return utf8.includes(String.fromCharCode(0xfffd)) ? bytes.toString('latin1') : utf8;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return bytes.toString('latin1');
+  }
 }
 
 /** The text of the first `<tag>…</tag>` after `from`, with its end, or undefined. */
@@ -98,7 +101,13 @@ export function parseAnswer(body) {
     if (!n) {
       break;
     }
-    const v = element(text, 'v', n.end, list.end);
+    // `<v/>` is an empty value (as Python's ElementTree reads it): unknown, not an error.
+    const empty = text.indexOf('<v/>', n.end);
+    const full = text.indexOf('<v>', n.end);
+    const v =
+      empty >= 0 && empty < list.end && (full < 0 || empty < full)
+        ? { text: '', start: empty, end: empty + 4 }
+        : element(text, 'v', n.end, list.end);
     if (!v) {
       throw new TouchlineError('bad_response', 'an item has no value', { sent: true });
     }

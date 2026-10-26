@@ -14,7 +14,7 @@ const gladys = new GladysIntegration();
 const app = new TouchlineApp({ gladys });
 
 registerHandlers(gladys, app, logger);
-gladys.handleShutdown(() => app.stop());
+gladys.handleShutdown(() => app.shutdown());
 
 logger.info('Starting the Roth Touchline integration...');
 gladys.connect().catch((err) => {

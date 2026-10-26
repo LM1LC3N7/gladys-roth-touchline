@@ -73,6 +73,10 @@ test('errors: statuses, unreadable count, network reasons without the address', 
     'unexpected answer (HTTP 503)',
   );
   assert.equal(networkError(new TouchlineError('late', 'x')).code, 'late');
+  // A parser error of Node: the answer came and is not ours (review r1, minor 9).
+  const parser = networkError(Object.assign(new Error('x'), { code: 'HPE_HEADER_OVERFLOW' }), true);
+  assert.equal(parser.code, 'bad_response');
+  assert.equal(parser.sent, true);
 });
 
 test('http: a real local server; bounded body, deadline, sent, beforeSend', async () => {

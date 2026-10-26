@@ -19,11 +19,15 @@ the notes of the version's GitHub Release.
 - Commands off by default: setpoints (`allow_setpoints`), modes and programs
   (`allow_modes`), bounded by the limits of the controller and a ceiling
   (24 °C by default, 16 to 30 °C), decided on a fresh read with the ids of
-  the device checked, confirmed by the echo of the controller, read again 5 s
-  and 20 s later; one command at a time, 3 s apart.
+  the device checked, confirmed by the echo of the controller and a read back
+  equal to the value written, read again 5 s and 20 s later (a read back
+  that differs is told in the status and the badge); a bounded queue serves
+  the commands one at a time, so a scene sets several rooms.
 - A read every 60 s (30 s to 10 min), never sooner across restarts; a pause
   of 1 to 15 min after a failed read, kept in `/data`; a device that does
-  not answer leaves the others read; a round bounded to 45 s.
+  not answer leaves the others read; a long round resumes where it stopped
+  and the controller rests between rounds; the configuration of Gladys is
+  read again when it fails at start.
 - "Test the connection" button; the status, the Discovery list and the
   transport badges are sent again at each reconnection to Gladys.
 - Device, feature and option names in French or English.

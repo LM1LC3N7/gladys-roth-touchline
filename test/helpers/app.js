@@ -50,6 +50,7 @@ export async function setup({
   const gladys = createFakeGladys({ selector: SELECTOR, config, devices: known });
   await gladys.connect();
   const { clock, timers, advance } = createFakeClock(now);
+  world.clock = clock;
   let drift = 0;
   const lines = [];
   const log = (...args) => lines.push(args.map(String).join(' '));
@@ -76,5 +77,30 @@ export async function setup({
     await advance(ms);
     await settle();
   };
-  return { app, gladys, clock, store: kept, world, start, wait, advance, lines };
+  /** Awaits a promise while the virtual clock moves (100 ms steps): a command waiting its turn. */
+  const act = async (promise, max = 30_000) => {
+    let done = false;
+    const result = promise.then(
+      (value) => {
+        done = true;
+        return { value };
+      },
+      (error) => {
+        done = true;
+        return { error };
+      },
+    );
+    await settle();
+    for (let t = 0; !done && t < max; t += 100) {
+      await advance(100);
+      await settle();
+    }
+    if (!done) throw new Error('the promise did not settle');
+    const { value, error } = await result;
+    if (error) throw error;
+    return value;
+  };
+  /** A command through the fake Gladys, its ack awaited while the clock moves. */
+  const cmd = (device, feature, value) => act(gladys.fake.setValue(device, feature, value));
+  return { app, gladys, clock, store: kept, world, start, wait, advance, act, cmd, lines };
 }

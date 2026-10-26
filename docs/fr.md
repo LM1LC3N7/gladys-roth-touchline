@@ -69,24 +69,53 @@ Bornes de sécurité :
 Chaque commande relit la pièce juste avant d'agir, vérifie que c'est bien le
 thermostat visé qui répond à cette position, et décide sur cette lecture ;
 elle part dans les 3,5 s ou est refusée sans rien envoyer. Le régulateur
-renvoie la valeur écrite : c'est la confirmation. S'il ne la renvoie pas à
-temps, Gladys affiche « envoyée, sans confirmation » et relit la pièce 5 s et
-20 s plus tard. Une commande à la fois, espacées de 3 s (le régulateur est
-lent).
+renvoie la valeur écrite (l'écho), puis la pièce est **relue** : la commande
+n'est réussie que si la valeur relue est celle demandée. Si l'écho arrive
+trop tard pour relire dans le délai de Gladys, Gladys affiche « envoyée et
+renvoyée par le régulateur : vérification par une relecture dans quelques
+secondes » ; sans écho à temps, « envoyée, sans confirmation ». Dans les deux
+cas la pièce est relue 5 s et 20 s plus tard (ces relectures attendent leur
+tour, elles ne sont jamais sautées). Si une relecture contredit l'écho, la
+commande est dite « sans effet » dans l'état de l'intégration, le journal et
+le badge de la pièce, jusqu'à la lecture suivante. Une lecture faite avant
+une écriture n'est jamais publiée après elle.
 
-Une commande est refusée, sans rien envoyer, dans ces cas : option
-désactivée ; valeur hors bornes, pas au dixième de degré, ou mode/programme
-inconnu ; pièce inconnue ou autre thermostat à sa position ; lecture du
-régulateur en pause après des échecs ; régulateur trop lent ; limites de
-consigne illisibles ; autre commande en cours ou trop récente.
+Les commandes attendent leur tour dans une file (8 au plus), une écriture à
+la fois, espacées de 0,5 s après la réponse de la précédente ; chacune garde
+son délai de 3,5 s depuis son arrivée. Une scène qui règle plusieurs pièces
+l'une après l'autre les règle toutes ; une scène qui les règle en même temps
+en règle quelques-unes d'affilée (6 au plus avec un régulateur rapide,
+moins s'il est lent) : au-delà, ou si une pièce répond « non envoyée à
+temps », laissez environ 4 s entre deux pièces.
+
+Une commande est refusée, sans rien envoyer, dans ces cas : configuration
+de l'intégration pas encore chargée ; option désactivée ; valeur hors bornes,
+pas au dixième de degré, ou mode/programme inconnu ; 8 commandes déjà en
+attente ; lecture du régulateur en pause après des échecs ; pièce inconnue ;
+aucun thermostat ou un autre thermostat à sa position ; état actuel illisible
+(lecture fraîche en échec ou réponse invalide) ; limites de consigne
+illisibles ou incohérentes ; adresse ou option changée pendant la commande ;
+régulateur trop lent, lecture en cours trop longue, ou trop de commandes
+avant elle pour partir à temps ; connexion refusée avant l'envoi (« commande
+non envoyée » et la raison). Une écriture partie peut aussi revenir « le
+régulateur a refusé la commande » (réponse d'erreur 4xx).
 
 ## Limites et sécurité
 
 - Lecture toutes les 60 s (de 30 s à 10 min), toutes les pièces à la suite,
   une requête à la fois ; une pièce qui ne répond pas laisse les autres se
-  lire ; une lecture n'entame plus de nouvelle pièce passé 45 s, le reste
-  attend la suivante. Jamais deux lectures à moins d'un intervalle, même après un
-  redémarrage (l'heure de la dernière tentative est gardée dans `/data`).
+  lire ; si toutes échouent, c'est une lecture en échec (pause ci-dessous).
+  Une lecture n'entame plus de nouvelle pièce passé 45 s (et jamais au-delà
+  de l'intervalle moins 10 s) ; la suivante reprend à la première pièce non
+  lue, si bien qu'aucune n'est oubliée. Le régulateur se repose au moins une
+  demi-intervalle entre deux lectures. Jamais deux lectures à moins d'un
+  intervalle, même après un redémarrage (l'heure de la dernière tentative
+  est gardée dans `/data` à chaque lecture).
+- Configuration de Gladys illisible au démarrage : nouvel essai après 5 s,
+  15 s, 1 min puis toutes les 5 min, avec un état qui le dit.
+- Une pièce ajoutée ou modifiée dans Gladys reçoit tout de suite ses
+  dernières valeurs seulement si elles sont fraîches (sinon à la lecture
+  suivante).
 - Régulateur injoignable : pause de 1, 2, 5, 10 puis 15 min (jamais moins
   que l'intervalle), gardée dans `/data`, pour les lectures, le bouton et
   les commandes.

@@ -23,6 +23,14 @@ up to date at the end of every milestone.
       bounds of the device and ceiling, `beforeSend`, echo, follow-up reads,
       spacing; test button; en/fr; docs; cover. Tested against a fake
       controller only (Node 22 and 24).
+- [x] **Review 1 fixes** (2026-10-26, review of 356a504, 6 important, 7
+      minor): confirmation by a read back, follow-ups never skipped, no
+      stale value published after a write; rotation and rest between
+      rounds; a bounded command queue (scenes); `getConfig()` retried;
+      "not sent" for a write that never left; no stale values on a device
+      created or updated after a failure; every device failing = failed
+      round; limits rounded inward; true reasons; clean names; bounded
+      status; `<v/>`; docs.
 - [ ] **Milestone 2 — real controller**: run against a real Touchline
       Ethernet controller (see "To check"); turn the answers (anonymized)
       into fixtures.
@@ -52,6 +60,11 @@ up to date at the end of every milestone.
   list publishes nothing for its select); whether a mode written while a
   program is active is applied or overridden by the program.
 - The names: UTF-8 or Latin-1 (both read).
+- The spacing of 0.5 s between two writes (from the answer of the
+  previous one) and the read back within the ack (echo by 2.8 s): enough
+  for the CGI, or does the controller need more rest after a write?
+- `<v/>` (empty value) in an answer: read as unknown here; check whether the
+  controller sends it.
 - The CGI timing (10 s timeout per request, 45 s per round, 32 devices at
   most): enough for a controller with many thermostats?
 - `SollTempMinVal` / `SollTempMaxVal`: present on every device (a command is
@@ -115,33 +128,59 @@ up to date at the end of every milestone.
   command on Touchline: no protective command exists, lowering is a command
   like the others (docs list the refusal cases exactly). Fresh read within
   2.5 s, ids checked, `beforeSend` re-checks the option, the ceiling, the
-  limits, the session and the 3.5 s deadline; the echo of the value is the
-  confirmation (the reference's check); no echo or a dropped answer after
-  the first byte: "sent, without confirmation" (never "not sent"); a 4xx:
-  "the controller refused"; follow-up reads of that device at 5 s and 20 s
-  (not a full round); one command at a time, 3 s after a write that left
-  (kept in `/data` so a restart keeps the spacing). The command's requests
-  go through the same one-at-a-time client as the round: the round yields to
-  a command between two devices; the command's deadlines bound its wait.
+  limits, the session and the 3.5 s deadline (limits in hundredths: the
+  low one rounded up, the high one down; inconsistent limits refused as
+  such). Confirmation (review r1, point 1): the echo alone is not enough;
+  when it comes by 2.8 s, the device is read back within the 4.3 s of the
+  ack and the command is OK only when the value read equals the value
+  written ("did not take effect: read X instead of Y" otherwise); a later
+  echo answers "sent and echoed: checked in a few seconds"; no echo in time
+  or a dropped answer after the first byte: "sent, without confirmation";
+  a write that never left (connection refused, `sent: false`, `onSent` not
+  called): "not sent: <reason>" (review r1, point 5); a 4xx: "the
+  controller refused". Follow-up reads of that device at 5 s and 20 s wait
+  their turn and are never skipped; each read after a write compares it
+  (3 checks) and a contradiction goes to the log, the status and a degraded
+  badge until the next read. A round never publishes the values of a device
+  read before a write on it that left since (`writtenAt` per device). Queue
+  (review r1, point 3): 8 commands at most wait their turn, served one at a
+  time, each keeping its 3.5 s from its arrival ("not sent in time, N
+  waiting before it"); writes 0.5 s apart from the answer of the previous
+  one (kept in `/data`); a parallel scene sets about 6 rooms with a fast
+  controller, a serial scene all of them (docs). The command's requests go
+  through the same one-at-a-time client as the round: the round yields to
+  the commands between two devices.
 - **Written values**: clean integers (`2250.0` for a setpoint as the
   reference prints a float, `1` for a mode); the reference's float
   arithmetic (`22.1*100 = 2210.0000000000005`) is not reproduced.
 - **Pace**: `lastReadAt` on the monotonic clock, `dueAt(mono)` from the
   caller's instant; the time of the last attempt is kept in `/data` before
-  the read (at most once a minute) and brought onto the monotonic clock at
-  start; the test button, a scan, a config save or a reconnection never read
-  sooner; the test button answers "next one possible in …" instead.
+  each round (before the read) and brought onto the monotonic clock at
+  start; the next round waits an interval from the start of the previous
+  one and half an interval from its end (the controller rests; review r1,
+  point 2); the test button, a scan, a config save or a reconnection never
+  read sooner; the test button answers "next one possible in …" instead.
+- **Configuration of Gladys** (review r1, point 4): `getConfig()` failing on
+  `connected` is retried after 5 s, 15 s, 1 min, then every 5 min, with a
+  status saying so; until it is read, commands are refused "configuration
+  not loaded yet"; a save of the form ends the retries.
 - **Failures**: the count failing = the round failed: pause of
   max(interval, 1/2/5/10/15 min), capped to 1 h, kept in `/data` (wall
   clock, capped when read back), badges unreachable, status "not read"; a
   device failing (timeout, bad answer, absent) only leaves that device
-  unread (listed in the status, degraded badge); a round over 45 s leaves
-  the rest for the next one; an internal error pauses one interval and
-  schedules the next read; a reconnection to Gladys clears nothing.
+  unread (listed in the status, 5 at most then "and N more", degraded
+  badge); every device failing fails the round (review r1, minor 7); a
+  round starts no new device past min(45 s, interval − 10 s) and the next
+  round starts at the first device left (rotation); an internal error
+  pauses one interval and schedules the next read; a reconnection to Gladys
+  clears nothing.
 - **`/data`**: `lastAttemptAt`, `key` (hash of address and port), `pause`,
   `lastWriteAt`; never the address nor any secret; 0600; 64 KB read cap.
 - **Freshness**: states are published from the round that read them;
-  nothing is published for an unread device or an unreadable value;
+  nothing is published for an unread device or an unreadable value; a
+  device created or updated in Gladys gets its last values only when no
+  read failed since and they are younger than an interval and a budget
+  (review r1, point 6);
   unchanged values are sent again every 30 min by the publisher heartbeat.
 - **Version 0.1.0 set by hand** in `package.json`, `package-lock.json`, the
   manifest and the `docker_image` tag (the template's 1.0.0 replaced); the

@@ -56,6 +56,11 @@ export function fakeController({ devices = [DEVICE()] } = {}) {
     held: undefined,
     /** Which writes to refuse ("no echo"): parameter names. */
     noEcho: new Set(),
+    /** Which writes are echoed without being applied: parameter names. */
+    echoOnly: new Set(),
+    /** The virtual clock (set by the app helper) and the cost of a request on it. */
+    clock: undefined,
+    cost: 0,
     hold() {
       let release;
       world.held = new Promise((resolve) => {
@@ -66,7 +71,7 @@ export function fakeController({ devices = [DEVICE()] } = {}) {
         release();
       };
     },
-    transport: async (options, { deadline, monotonic, beforeSend } = {}) => {
+    transport: async (options, { deadline, monotonic, beforeSend, onSent } = {}) => {
       const at = monotonic?.() ?? 0;
       const record = { ...options, at, deadline, end: undefined };
       world.requests.push(record);
@@ -74,6 +79,20 @@ export function fakeController({ devices = [DEVICE()] } = {}) {
         throw new TouchlineError('late', 'no time left to send');
       }
       beforeSend?.();
+      if (world.refuseWrite && options.method === 'GET') {
+        // The connection refused before the write left: nothing sent.
+        world.refuseWrite = false;
+        throw new TouchlineError('network', 'connection refused', { reason: 'ECONNREFUSED' });
+      }
+      onSent?.();
+      if (world.cost && world.clock) {
+        // A slow controller: each request takes `cost` ms of the virtual clock.
+        world.clock.now += world.cost;
+      }
+      if (world.writeCost && world.clock && options.method === 'GET') {
+        // A slow write: its echo comes `writeCost` ms later on the virtual clock.
+        world.clock.now += world.writeCost;
+      }
       if (world.delay > 0) {
         await new Promise((resolve) => setTimeout(resolve, world.delay));
       }
@@ -122,6 +141,9 @@ async function respond(world, { method, path, body }) {
     }
     if (world.noEcho.has(write[2])) {
       return ok('');
+    }
+    if (world.echoOnly.has(write[2])) {
+      return ok(write[3]);
     }
     device[write[2]] = String(Math.round(Number(write[3])));
     return ok(write[3]);

@@ -59,6 +59,22 @@ test('parseAnswer: Latin-1 names are read, UTF-8 ones too', () => {
   assert.equal(decodeEntities('&unknown; &#0; &#x110000;'), '&unknown; &#0; &#x110000;');
 });
 
+test('parseAnswer: <v/> is an empty value, a legitimate U+FFFD stays UTF-8 (review r1, minors 10 and 13)', () => {
+  const values = parseAnswer(
+    '<body><item_list><i><n>G0.name</n><v/><n>G0.SollTemp</n><v>2200</v></i></item_list></body>',
+  );
+  assert.equal(values.get('G0.name'), '');
+  assert.equal(values.get('G0.SollTemp'), '2200');
+  const device = parseDevice(
+    parseAnswer(answerFor(deviceItems(0), [DEVICE({ name: '' })]).replace('<v></v>', '<v/>')),
+    0,
+  );
+  assert.equal(device.name, undefined);
+  assert.equal(device.targetTenths, 220, 'the rest of the device is read');
+  assert.equal(decodeBody(Buffer.from('S\ufffdjour é', 'utf8')), 'S\ufffdjour é');
+  assert.equal(decodeBody(Buffer.from([0x53, 0xe9])), 'Sé');
+});
+
 test('parseAnswer: refuses what is not an answer, bounded in items', () => {
   assert.throws(() => parseAnswer(Buffer.from('')), /empty/);
   assert.throws(() => parseAnswer(Buffer.from('<html>nope</html>')), /no item list/);
@@ -100,7 +116,10 @@ test('model: integers strictly, temperatures plausible, names printable', () => 
   assert.equal(tenthsOf('2155'), 216, 'rounded to tenths');
   assert.equal(tenthsOf('9000'), undefined, '90 °C is not a room temperature');
   assert.equal(tenthsOf('-5000'), undefined);
-  assert.equal(nameOf('  Living\u0000 room '), 'Living  room');
+  assert.equal(nameOf('  Living\u0000 room '), 'Living room');
+  // Bidirectional and zero-width controls, lone surrogates: never in a name (review r1, minor 10).
+  assert.equal(nameOf('Sa\u202elon\u200b\ud800 x'), 'Sa lon x');
+  assert.equal(nameOf('Séjour 😀'), 'Séjour 😀', 'a whole surrogate pair is kept');
   assert.equal(nameOf(''), undefined);
   assert.equal(nameOf('x'.repeat(100)).length, LIMITS.nameLength);
 });
@@ -117,8 +136,9 @@ test('model: a device, its ids, the count capped', () => {
     name: 'Living room',
     temperatureTenths: 215,
     targetTenths: 220,
-    minTenths: 50,
-    maxTenths: 300,
+    targetHundredths: 2200,
+    minHundredths: 500,
+    maxHundredths: 3000,
     modeCode: 2,
     programCode: 3,
   });

@@ -6,19 +6,26 @@
 // the mode, the week program), each refused unless its option allows it.
 // index.js only wires the SDK handlers.
 //
-// One read = the number of devices, then each device `G<i>` in turn, one
+// One round = the number of devices, then each device `G<i>` in turn, one
 // request at a time (the CGI is slow). A device that does not answer leaves
-// only that device unread (the others go on); a round never lasts longer
-// than its budget, the devices left wait for the next round. The number of
-// devices failing fails the round. The values of a round always go to the
-// device of the ids read in that round, never to another one.
+// only that device unread (the others go on); every device failing fails
+// the round. A round starts no new device past its budget (45 s, and never
+// past the interval minus 10 s): the next round starts at the first device
+// left unread, so each device is read at least every other round. The
+// values of a round always go to the device of the ids read in that round,
+// never to another one, and never when a write on that device left after
+// the device was read.
 //
-// The pace is global and kept across restarts: never two reads less than an
-// interval apart, whatever asks (a reconnection, a save of the form, the
-// test button, the Discover tab, a restart of the container: the time of the
-// last attempt is kept in /data). A failed round pauses 1, 2, 5, 10 then
-// 15 min, never under the interval, the pause kept in /data; a reconnection
-// to Gladys clears nothing. The integration is never left without a timer.
+// The pace is global and kept across restarts: never two rounds less than an
+// interval apart (start to start), and the controller rests at least half
+// an interval between the end of a round and the start of the next,
+// whatever asks (a reconnection, a save of the form, the test button, the
+// Discover tab, a restart: the time of the last attempt is kept in /data). A
+// failed round pauses 1, 2, 5, 10 then 15 min, never under the interval, the
+// pause kept in /data; a reconnection to Gladys clears nothing. The
+// integration is never left without a timer, and a configuration of Gladys
+// that cannot be read at start is read again (5 s, 15 s, 1 min, then every
+// 5 min).
 //
 // Two clocks: `now` (wall clock) dates what /data keeps; `monotonic` paces
 // the reads, the pauses, the budgets and the guards, so that a wall clock
@@ -27,15 +34,21 @@
 //
 // The commands follow the rules learnt on the previous modules (as the
 // sibling gladys-touchline-sl):
+//   - a bounded queue (8): a scene setting several rooms gets them all, one
+//     write at a time, each command keeping its own deadline from its
+//     arrival; the round yields to the commands between two devices;
 //   - decided on a fresh read of the device only, never on the values kept
 //     in memory, with its ids checked against the target;
 //   - the options and the bounds are checked on arrival, after the fresh
 //     read and right before the request leaves (beforeSend);
-//   - sent within 3.5 s of the click or refused unsent; answered by 4.3 s;
-//   - a write that may have reached the controller is never answered "not
-//     sent": "sent, without confirmation", then spaced reads of the device;
-//   - the ack never waits for a publication to Gladys;
-//   - one command at a time, spaced; never retried.
+//   - sent within 3.5 s of the click or refused unsent, with the true
+//     reason; a write that may have reached the controller is never
+//     answered "not sent";
+//   - confirmed by a read back equal to the value written (the echo of the
+//     controller alone is not enough): within the ack when the echo comes
+//     by 2.8 s, else by the follow-up reads (5 s and 20 s, never skipped); a
+//     read back that differs is told in the logs, the status and the badge;
+//   - the ack never waits for a publication to Gladys.
 // -----------------------------------------------------------------------------
 
 import { DEVICE_TRANSPORTS, createLogger } from '@gladysassistant/integration-sdk';
@@ -49,12 +62,23 @@ import {
   parseDeviceId,
   parseFeatureId,
 } from './devices.js';
-import { ERRORS, T, age, both, join, reasonOf, word } from './i18n.js';
+import {
+  ERRORS,
+  MODE_NAMES,
+  PROGRAM_NAMES,
+  T,
+  age,
+  both,
+  deviceName,
+  join,
+  reasonOf,
+  word,
+} from './i18n.js';
 import { StatePublisher } from './publisher.js';
 import { fileStore, normalizeMemory } from './store.js';
 import { TouchlineClient } from './touchline/client.js';
 import { TouchlineError, errorReason } from './touchline/http.js';
-import { modeCode, platformId, programCode } from './touchline/model.js';
+import { modeCode, modeOf, platformId, programCode, programOf } from './touchline/model.js';
 
 /** A number sent by Gladys: a finite number, or a plain decimal text ('' and null are not 0). */
 function numberOf(value) {
@@ -65,6 +89,34 @@ function numberOf(value) {
     return Number(value);
   }
   return undefined;
+}
+
+/** The raw value a command writes, as a read reports it: hundredths of °C, or a code. */
+function readValueOf(role, device) {
+  if (role === F.TARGET) {
+    return device.targetHundredths;
+  }
+  return role === F.MODE ? device.modeCode : device.programCode;
+}
+
+/** A raw value as the user reads it: "21.5 °C", "Night", "Program 2", "?" when unknown. */
+function describe(role, value) {
+  if (value === undefined) {
+    return both('?', '?');
+  }
+  if (role === F.TARGET) {
+    const text = `${value / 100} °C`;
+    return both(text, text.replace('.', ','));
+  }
+  const name = role === F.MODE ? MODE_NAMES[modeOf(value)] : PROGRAM_NAMES[programOf(value)];
+  return name ?? both(`code ${value}`, `code ${value}`);
+}
+
+/** Lists the first 5 entries, then "and N more". */
+function bounded(entries, language) {
+  const shown = entries.slice(0, 5).map((e) => e[language]);
+  const more = entries.length - shown.length;
+  return shown.join(', ') + (more > 0 ? T.andMore(more)[language] : '');
 }
 
 export class TouchlineApp {
@@ -86,21 +138,37 @@ export class TouchlineApp {
     this.store = store;
     this.publisher = new StatePublisher({ gladys, logger, now, timers });
     this.config = normalizeConfig();
+    this.configLoaded = false;
+    this.configTries = 0;
+    this.configTimer = undefined;
+    this.configGeneration = 0;
     this.memory = normalizeMemory(null);
     this.client = undefined;
-    /** platformId -> { device, index, at (monotonic) }: the devices of the last round. */
+    /** platformId -> { device, index, at (monotonic, when the read started) }. */
     this.devices = new Map();
     /** The last round: { count, unread: [{ index, code }] } or undefined. */
     this.round = undefined;
+    /** The position the next round starts at (rotation past the budget). */
+    this.cursor = 0;
     this.lastReadAt = undefined;
+    this.lastEndAt = undefined;
     this.pause = undefined;
     this.failures = 0;
     this.offline = false;
+    /** The end of the last write that left (monotonic): the next write waits the spacing. */
     this.lastWriteAt = undefined;
+    /** platformId -> the monotonic time the last write on that device left. */
+    this.writtenAt = new Map();
+    /** platformId -> { role, expected, checks }: a write not yet seen in a read back. */
+    this.pendingWrites = new Map();
+    /** platformId -> { en, fr }: a write the read back contradicts, until the next read. */
+    this.warnings = new Map();
     this.timer = undefined;
     this.followUps = new Set();
     this.running = undefined;
-    this.inFlight = undefined;
+    /** Commands waiting their turn, and the one being served. */
+    this.commands = [];
+    this.serving = undefined;
     this.generation = 0;
     this.started = false;
     this.lastStatus = undefined;
@@ -110,6 +178,56 @@ export class TouchlineApp {
   }
 
   // --- Lifecycle -------------------------------------------------------------
+
+  /**
+   * Connected to Gladys: the configuration is read (`load`, the SDK's
+   * getConfig), and read again on failure (5 s, 15 s, 1 min, then every
+   * 5 min) with a status saying so; never a dead integration.
+   */
+  async onConnected(load) {
+    this.configLoader = load;
+    this.configTries = 0;
+    this.clearConfigTimer();
+    await this.loadConfig();
+  }
+
+  async loadConfig() {
+    const generation = ++this.configGeneration;
+    let raw;
+    try {
+      raw = await this.configLoader();
+    } catch (err) {
+      if (generation !== this.configGeneration) {
+        return;
+      }
+      const wait = TIMINGS.configRetry[Math.min(this.configTries, TIMINGS.configRetry.length - 1)];
+      this.configTries += 1;
+      this.logger.warn(
+        `roth-touchline: configuration not read (${err?.name ?? 'Error'}); new try in ${Math.round(wait / 1000)} s`,
+      );
+      if (!this.configLoaded) {
+        await this.setStatus(false, T.configNotRead(age(wait)));
+      }
+      this.clearConfigTimer();
+      this.configTimer = this.timers.setTimeout(() => {
+        this.configTimer = undefined;
+        return this.loadConfig().catch(() => {});
+      }, wait);
+      return;
+    }
+    if (generation !== this.configGeneration) {
+      return;
+    }
+    this.configTries = 0;
+    await this.connected(raw);
+  }
+
+  clearConfigTimer() {
+    if (this.configTimer !== undefined) {
+      this.timers.clearTimeout(this.configTimer);
+      this.configTimer = undefined;
+    }
+  }
 
   async start(raw = {}) {
     try {
@@ -188,6 +306,13 @@ export class TouchlineApp {
     this.client = undefined;
   }
 
+  /** The container stops: every timer, the configuration retry included. */
+  shutdown() {
+    this.configGeneration += 1;
+    this.clearConfigTimer();
+    this.stop();
+  }
+
   clearTimer() {
     if (this.timer !== undefined) {
       this.timers.clearTimeout(this.timer);
@@ -198,10 +323,15 @@ export class TouchlineApp {
   reset() {
     this.devices.clear();
     this.round = undefined;
+    this.cursor = 0;
+    this.lastEndAt = undefined;
     this.pause = undefined;
     this.failures = 0;
     this.offline = false;
     this.lastWriteAt = undefined;
+    this.writtenAt.clear();
+    this.pendingWrites.clear();
+    this.warnings.clear();
     this.published = undefined;
     this.badges.clear();
   }
@@ -221,11 +351,12 @@ export class TouchlineApp {
   }
 
   /**
-   * Connected to Gladys. The first time, start; after a reconnection (Gladys
-   * restarted), resend what Gladys keeps in memory only. The pause and the
-   * client stay.
+   * The configuration of Gladys read. The first time, start; after a
+   * reconnection (Gladys restarted), resend what Gladys keeps in memory
+   * only. The pause and the client stay.
    */
   async connected(raw = {}) {
+    this.configLoaded = true;
     if (!this.started) {
       this.started = true;
       await this.start(raw);
@@ -248,11 +379,16 @@ export class TouchlineApp {
   async configUpdated(raw = {}) {
     const next = normalizeConfig(raw);
     const previous = this.config;
+    this.configLoaded = true;
+    // The configuration is known now: a retry of its read is not needed any more.
+    this.clearConfigTimer();
     if (
+      !this.started ||
       next.host !== previous.host ||
       next.port !== previous.port ||
       next.addressError !== previous.addressError
     ) {
+      this.started = true;
       return this.start(raw);
     }
     this.config = next;
@@ -333,6 +469,11 @@ export class TouchlineApp {
     return this.config.pollInterval * 1000;
   }
 
+  /** A round starts no new device past this: 45 s, and never past the interval minus 10 s. */
+  get roundBudget() {
+    return Math.min(TIMINGS.roundBudget, this.interval - TIMINGS.roundMargin);
+  }
+
   /** The rest of the pause (ms), capped at every use; 0 when none. */
   pauseLeft(mono) {
     if (!this.pause) {
@@ -341,9 +482,17 @@ export class TouchlineApp {
     return Math.min(Math.max(0, this.pause.due - mono), TIMINGS.pauseMax);
   }
 
-  /** The monotonic time from which the next read may start, from the caller's instant `mono`. */
+  /**
+   * The monotonic time from which the next round may start, from the
+   * caller's instant `mono`: an interval after the start of the previous
+   * one, half an interval after its end (the controller rests), after the
+   * pause.
+   */
   dueAt(mono) {
-    const due = this.lastReadAt === undefined ? mono : this.lastReadAt + this.interval;
+    let due = this.lastReadAt === undefined ? mono : this.lastReadAt + this.interval;
+    if (this.lastEndAt !== undefined) {
+      due = Math.max(due, this.lastEndAt + this.interval * TIMINGS.restShare);
+    }
     return Math.max(due, mono + this.pauseLeft(mono));
   }
 
@@ -425,56 +574,76 @@ export class TouchlineApp {
       result = await this.readAll(client, gone, mono);
     } catch (err) {
       if (gone()) return;
+      this.lastEndAt = this.monotonic();
       await this.failed(err, mono);
       this.schedule();
       return;
     }
     if (gone() || !result) return;
-    await this.succeeded(result, mono);
+    this.lastEndAt = this.monotonic();
+    const failure = result.unread.find((u) => u.err)?.err;
+    if (result.count > 0 && result.devices.length === 0 && failure) {
+      // Every device failed: the controller is not working, not "connected".
+      await this.failed(failure, mono);
+    } else {
+      await this.succeeded(result, mono);
+    }
     if (!gone()) {
       this.schedule();
     }
   }
 
+  /** Resolves once no command is waiting nor being served (the round yields to them). */
+  async commandsIdle() {
+    while (this.serving) {
+      await this.serving;
+    }
+  }
+
   /**
-   * The number of devices, then each device in turn. Throws for the whole
-   * round only on the count. A device failing (even a timeout) only leaves
-   * that device unread; a round never takes longer than its budget.
+   * The number of devices, then each device in turn from the cursor. Throws
+   * for the whole round only on the count. A device failing (even a
+   * timeout) only leaves that device unread; past the budget no new device
+   * is started, and the next round starts at the first one left.
    */
   async readAll(client, gone, started) {
     const count = await client.count({ deadline: this.monotonic() + TIMINGS.requestTimeout });
     if (gone()) return undefined;
     const devices = [];
     const unread = [];
-    for (let index = 0; index < count; index += 1) {
+    const first = count > 0 ? this.cursor % count : 0;
+    let stoppedAt;
+    for (let k = 0; k < count; k += 1) {
+      const index = (first + k) % count;
       // A command waiting goes first (one request at a time on the controller).
-      if (this.inFlight) {
-        await this.inFlight.catch(() => {});
-        if (gone()) return undefined;
+      await this.commandsIdle();
+      if (gone()) return undefined;
+      if (stoppedAt === undefined && this.monotonic() - started >= this.roundBudget) {
+        stoppedAt = index;
       }
-      if (this.monotonic() - started >= TIMINGS.roundBudget) {
+      if (stoppedAt !== undefined) {
         unread.push({ index, code: 'budget' });
         continue;
       }
+      const at = this.monotonic();
       try {
-        const device = await client.device(index, {
-          deadline: this.monotonic() + TIMINGS.requestTimeout,
-        });
+        const device = await client.device(index, { deadline: at + TIMINGS.requestTimeout });
         if (gone()) return undefined;
         if (device === undefined) {
           unread.push({ index, code: 'absent' });
         } else {
-          devices.push(device);
+          devices.push({ device, at });
         }
       } catch (err) {
         if (gone()) return undefined;
         if (!(err instanceof TouchlineError)) {
           throw err;
         }
-        unread.push({ index, code: err.code });
+        unread.push({ index, code: err.code, err });
         this.logger.warn(`roth-touchline: G${index} not read: ${errorReason(err)}`);
       }
     }
+    this.cursor = stoppedAt ?? first;
     return { count, devices, unread };
   }
 
@@ -483,10 +652,11 @@ export class TouchlineApp {
     this.failures = 0;
     this.offline = false;
     this.lastReason = undefined;
-    this.devices.clear();
+    const previous = this.devices;
+    this.devices = new Map();
     // Two devices with the same ids in one round: neither is trusted (they would mix their values).
     const seen = new Map();
-    for (const device of devices) {
+    for (const { device } of devices) {
       const key = platformId(device);
       if (key === undefined) {
         unread.push({ index: device.index, code: 'no_id' });
@@ -494,7 +664,7 @@ export class TouchlineApp {
       }
       seen.set(key, (seen.get(key) ?? 0) + 1);
     }
-    for (const device of devices) {
+    for (const { device, at } of devices) {
       const key = platformId(device);
       if (key === undefined) {
         continue;
@@ -503,7 +673,14 @@ export class TouchlineApp {
         unread.push({ index: device.index, code: 'duplicate' });
         continue;
       }
-      this.devices.set(key, { device, index: device.index, at: mono });
+      if (at < (this.writtenAt.get(key) ?? -Infinity)) {
+        // Read before a write that left since: its values are older than the write, never published.
+        const kept = previous.get(key);
+        this.devices.set(key, kept ?? { device, index: device.index, at });
+        continue;
+      }
+      this.devices.set(key, { device, index: device.index, at });
+      this.checkWrite(key, device, at);
       this.queueStates(device);
     }
     this.round = { count, unread: unread.sort((a, b) => a.index - b.index) };
@@ -514,7 +691,7 @@ export class TouchlineApp {
     await this.flush();
   }
 
-  /** The count failed: a pause, never under the interval, the devices of the last round kept for Discovery only. */
+  /** The round failed: a pause, never under the interval, the devices of the last round kept for Discovery only. */
   async failed(err, mono) {
     const reason = err instanceof TouchlineError ? errorReason(err) : 'internal error';
     const wait = Math.max(
@@ -531,31 +708,29 @@ export class TouchlineApp {
     await this.publishBadges();
   }
 
-  /** "Connected: 2/3 devices read. Not read: G2 (no answer in time)." */
+  /** "Connected: 2/3 devices read. Not read: G2 (no answer in time)." (5 listed at most) */
   statusMessage() {
     const { count, unread } = this.round;
-    if (count === 0) {
-      return T.noDevice;
+    let message = count === 0 ? T.noDevice : T.connected(this.devices.size, count);
+    if (count > 0 && unread.length > 0) {
+      const reasons = {
+        budget: both('round too long', 'lecture trop longue'),
+        absent: both('not in the answer', 'absent de la réponse'),
+        no_id: both('ids unreadable', 'identifiants illisibles'),
+        duplicate: both('same ids as another device', 'mêmes identifiants qu’un autre appareil'),
+      };
+      const entries = unread.map((u) => {
+        const reason = reasons[u.code] ?? reasonOf(u.err ?? { code: u.code });
+        return both(`G${u.index} (${reason.en})`, `G${u.index} (${reason.fr})`);
+      });
+      const list = both(bounded(entries, 'en'), bounded(entries, 'fr'));
+      message = join(message, both(T.unreadDevices(list.en).en, T.unreadDevices(list.fr).fr));
     }
-    const base = T.connected(this.devices.size, count);
-    if (unread.length === 0) {
-      return base;
+    if (this.warnings.size > 0) {
+      const entries = [...this.warnings.values()];
+      message = join(message, T.notApplied(both(bounded(entries, 'en'), bounded(entries, 'fr'))));
     }
-    const reasons = {
-      budget: both('round too long', 'lecture trop longue'),
-      absent: both('not in the answer', 'absent de la réponse'),
-      no_id: both('ids unreadable', 'identifiants illisibles'),
-      duplicate: both('same ids as another device', 'mêmes identifiants qu’un autre appareil'),
-    };
-    const list = both(
-      unread
-        .map((u) => `G${u.index} (${(reasons[u.code] ?? reasonOf({ code: u.code })).en})`)
-        .join(', '),
-      unread
-        .map((u) => `G${u.index} (${(reasons[u.code] ?? reasonOf({ code: u.code })).fr})`)
-        .join(', '),
-    );
-    return join(base, both(T.unreadDevices(list.en).en, T.unreadDevices(list.fr).fr));
+    return message;
   }
 
   // --- Gladys ----------------------------------------------------------------
@@ -641,6 +816,16 @@ export class TouchlineApp {
         ),
       };
     }
+    if (this.warnings.has(key)) {
+      return {
+        transport: DEVICE_TRANSPORTS.LOCAL,
+        degraded: true,
+        message: both(
+          'The last command did not take effect (read back differs)',
+          'La dernière commande n’a pas pris effet (la relecture diffère)',
+        ),
+      };
+    }
     return { transport: DEVICE_TRANSPORTS.LOCAL };
   }
 
@@ -667,7 +852,12 @@ export class TouchlineApp {
     }
   }
 
-  /** A device was created (or updated): send its last values at once. */
+  /**
+   * A device was created (or updated): its last values at once, only when
+   * they are fresh (read by the last round or a later read, no failure
+   * since, younger than an interval and a budget). Otherwise the next round
+   * sends them.
+   */
   async deviceCreated(device) {
     this.badges.delete(device?.external_id);
     const created = this.createdFeatures();
@@ -676,7 +866,13 @@ export class TouchlineApp {
     }
     const ids = parseDeviceId(device?.external_id);
     const entry = ids && this.devices.get(`${ids.owner}-${ids.id}`);
-    if (entry) {
+    const mono = this.monotonic();
+    if (
+      entry &&
+      !this.offline &&
+      this.pauseLeft(mono) === 0 &&
+      mono - entry.at <= this.interval + this.roundBudget
+    ) {
       this.queueStates(entry.device, created);
     }
     await this.flush();
@@ -719,7 +915,7 @@ export class TouchlineApp {
     }
     const due = this.dueAt(mono);
     if (mono < due) {
-      // Never a read sooner than the interval (nor during a pause).
+      // Never a read sooner than the interval (nor during a pause, nor during the rest).
       return join(T.test.wait(age(due - mono)), this.lastMessage ?? T.connecting);
     }
     let handle;
@@ -749,14 +945,25 @@ export class TouchlineApp {
     return this.refusal(role === F.TARGET ? ERRORS.setpointsDisabled : ERRORS.modesDisabled);
   }
 
-  /** The bounds of a setpoint, in tenths of °C: the limits of the device, within 5 °C and the ceiling. */
+  /**
+   * The bounds of a setpoint, in tenths of °C: the limits of the device
+   * (hundredths, the low one rounded up, the high one down), within 5 °C and
+   * the ceiling. `{ error }` when the limits are missing or inconsistent.
+   */
   bounds(device) {
-    if (device.minTenths === undefined || device.maxTenths === undefined) {
-      return undefined;
+    if (device.minHundredths === undefined || device.maxHundredths === undefined) {
+      return { error: ERRORS.missingLimits };
     }
-    const low = Math.max(SETPOINT.min * 10, device.minTenths);
-    const high = Math.min(SETPOINT.max * 10, this.config.ceiling * 10, device.maxTenths);
-    return low <= high ? { low, high } : undefined;
+    if (device.minHundredths > device.maxHundredths) {
+      return { error: ERRORS.inconsistentLimits };
+    }
+    const low = Math.max(SETPOINT.min * 10, Math.ceil(device.minHundredths / 10));
+    const high = Math.min(
+      SETPOINT.max * 10,
+      this.config.ceiling * 10,
+      Math.floor(device.maxHundredths / 10),
+    );
+    return low <= high ? { low, high } : { error: ERRORS.inconsistentLimits };
   }
 
   /**
@@ -788,6 +995,7 @@ export class TouchlineApp {
     return { parameter: API.write.setpoint, tenths };
   }
 
+  /** A command: checked at once, then queued (8 at most) and served one at a time. */
   async setValue(_device, feature, value) {
     // The deadlines count from the arrival of the command, before any wait.
     const received = this.monotonic();
@@ -795,25 +1003,47 @@ export class TouchlineApp {
     if (!target || !COMMAND_ROLES.includes(target.role)) {
       throw this.refusal(ERRORS.readOnly);
     }
+    if (!this.configLoaded) {
+      throw this.refusal(ERRORS.configNotLoaded);
+    }
     if (!this.allowed(target.role)) {
       throw this.disabledError(target.role);
     }
     const wanted = this.parseCommand(target.role, value);
-    if (
-      this.inFlight ||
-      (this.lastWriteAt !== undefined && received < this.lastWriteAt + TIMINGS.commandSpacing)
-    ) {
-      throw this.refusal(ERRORS.stillRunning);
+    const ahead = this.commands.length + (this.serving ? 1 : 0);
+    if (this.commands.length >= TIMINGS.commandQueue) {
+      throw this.refusal(ERRORS.queueFull(this.commands.length));
     }
-    const promise = this.command(target, wanted, received);
-    this.inFlight = promise;
-    try {
-      return await promise;
-    } finally {
-      if (this.inFlight === promise) {
-        this.inFlight = undefined;
+    return new Promise((resolve, reject) => {
+      this.commands.push({ target, wanted, received, ahead, resolve, reject });
+      this.serveCommands();
+    });
+  }
+
+  serveCommands() {
+    if (this.serving) {
+      return this.serving;
+    }
+    this.serving = (async () => {
+      while (this.commands.length > 0) {
+        const job = this.commands.shift();
+        try {
+          job.resolve(await this.command(job));
+        } catch (err) {
+          job.reject(err);
+        }
       }
-    }
+    })().finally(() => {
+      this.serving = undefined;
+      if (this.commands.length > 0) {
+        this.serveCommands();
+      }
+    });
+    return this.serving;
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => this.timers.setTimeout(resolve, ms));
   }
 
   /** The checks before sending, on the latest configuration and state. */
@@ -830,8 +1060,8 @@ export class TouchlineApp {
     if (tenths !== undefined) {
       // The ceiling may have been lowered since the command arrived.
       const bounds = this.bounds(device);
-      if (!bounds) {
-        throw this.refusal(ERRORS.missingLimits);
+      if (bounds.error) {
+        throw this.refusal(bounds.error);
       }
       if (tenths < bounds.low || tenths > bounds.high) {
         throw this.refusal(ERRORS.outOfRange(bounds.low / 10, bounds.high / 10));
@@ -839,22 +1069,53 @@ export class TouchlineApp {
     }
   }
 
-  async command(target, wanted, received) {
+  /** Too late to send: the true cause (the commands before it, a round, or the controller). */
+  lateError(ahead, roundBusy) {
+    if (ahead > 0) {
+      return this.refusal(ERRORS.queueLate(ahead));
+    }
+    return this.refusal(roundBusy ? ERRORS.busy : ERRORS.tooSlow);
+  }
+
+  async command({ target, wanted, received, ahead }) {
     const generation = this.generation;
     const client = this.client;
+    const roundBusy = Boolean(this.running);
     if (!client) {
       throw this.refusal(ERRORS.unknownDevice);
+    }
+    // The pause first: when the controller is failing, that is the cause.
+    if (this.pause && this.pauseLeft(this.monotonic()) > 0) {
+      throw this.refusal(ERRORS.paused);
     }
     const key = `${target.owner}-${target.id}`;
     const entry = this.devices.get(key);
     if (!entry) {
       throw this.refusal(ERRORS.unknownDevice);
     }
-    if (this.pause && this.pauseLeft(received) > 0) {
+    const sendBy = received + TIMINGS.commandSendBy;
+    const latest = sendBy - TIMINGS.commandMinSend - TIMINGS.commandMinRead;
+    // Writes are spaced from the answer of the previous one.
+    const mono = this.monotonic();
+    const rest =
+      this.lastWriteAt === undefined ? 0 : this.lastWriteAt + TIMINGS.commandSpacing - mono;
+    if (rest > 0) {
+      if (mono + rest > latest) {
+        throw ahead > 0 ? this.refusal(ERRORS.queueLate(ahead)) : this.refusal(ERRORS.stillRunning);
+      }
+      await this.sleep(rest);
+      if (generation !== this.generation) {
+        throw this.refusal(ERRORS.unknownDevice);
+      }
+    }
+    const start = this.monotonic();
+    if (start > latest) {
+      throw this.lateError(ahead, roundBusy);
+    }
+    if (this.pause && this.pauseLeft(start) > 0) {
       throw this.refusal(ERRORS.paused);
     }
-    const sendBy = received + TIMINGS.commandSendBy;
-    const readBy = Math.min(received + TIMINGS.commandReadMax, sendBy - TIMINGS.commandMinSend);
+    const readBy = Math.min(start + TIMINGS.commandReadMax, sendBy - TIMINGS.commandMinSend);
     // The fresh read: the device at its last known position, never the values in memory.
     let fresh;
     try {
@@ -864,17 +1125,17 @@ export class TouchlineApp {
         throw err;
       }
       if (err.code === 'late' || err.code === 'timeout') {
-        throw this.refusal(ERRORS.tooSlow);
-      }
-      if (err.code === 'busy') {
-        throw this.refusal(ERRORS.busy);
+        throw this.lateError(ahead, roundBusy || Boolean(this.running));
       }
       throw this.refusal(ERRORS.unknownState(reasonOf(err)));
     }
     if (generation !== this.generation) {
       throw this.refusal(ERRORS.unknownDevice);
     }
-    if (fresh === undefined || platformId(fresh) !== key) {
+    if (fresh === undefined) {
+      throw this.refusal(ERRORS.noDeviceAtPosition);
+    }
+    if (platformId(fresh) !== key) {
       // The position moved (a device removed): the next round finds it again.
       throw this.refusal(ERRORS.otherDevice);
     }
@@ -890,10 +1151,19 @@ export class TouchlineApp {
           // Right before the first byte: the option, the ceiling and the session again.
           this.checkBeforeSend(generation, client, target.role, wanted.tenths, fresh);
           if (this.monotonic() >= sendBy) {
-            throw this.refusal(ERRORS.tooSlow);
+            throw this.lateError(ahead, roundBusy);
           }
+        },
+        onSent: () => {
+          // The request really left: from now on, never "not sent".
           left = true;
-          this.lastWriteAt = this.monotonic();
+          const at = this.monotonic();
+          this.writtenAt.set(key, at);
+          this.pendingWrites.set(key, {
+            role: target.role,
+            expected: value,
+            checks: 1 + TIMINGS.followUps.length,
+          });
         },
       });
     } catch (err) {
@@ -903,8 +1173,11 @@ export class TouchlineApp {
       if (!(err instanceof TouchlineError)) {
         throw err;
       }
-      if (err.code === 'late' || (err.code === 'timeout' && !err.sent) || err.code === 'busy') {
-        throw this.refusal(err.code === 'busy' ? ERRORS.busy : ERRORS.tooSlow);
+      if (!left || !err.sent) {
+        if (err.code === 'late') {
+          throw this.lateError(ahead, roundBusy);
+        }
+        throw this.refusal(ERRORS.notSent(reasonOf(err)));
       }
       if (err.code === 'http' && err.status && err.status >= 400 && err.status < 500) {
         throw this.refusal(ERRORS.refusedByController);
@@ -913,12 +1186,100 @@ export class TouchlineApp {
       throw this.refusal(ERRORS.unconfirmed);
     }
     this.afterWrite(generation, entry.index, key);
-    return undefined;
+    // The echo came: the value is read back within the ack when there is time, and compared.
+    const echoed = this.monotonic();
+    if (echoed <= received + TIMINGS.commandConfirmBy) {
+      let check;
+      try {
+        check = await client.device(entry.index, { deadline: answerBy });
+      } catch {
+        check = undefined;
+      }
+      if (generation === this.generation && check && platformId(check) === key) {
+        const result = this.storeRead(key, check, echoed);
+        if (result === 'applied') {
+          await this.refreshStatus();
+          return undefined;
+        }
+        if (result === 'not_applied') {
+          await this.refreshStatus();
+          throw this.refusal(
+            ERRORS.notAppliedNow(
+              describe(target.role, readValueOf(target.role, check)),
+              describe(target.role, value),
+            ),
+          );
+        }
+      }
+    }
+    throw this.refusal(ERRORS.verifyLater);
+  }
+
+  /**
+   * A read of a device after a write: compared with the value written when
+   * the read started after the write left. 'applied', 'not_applied', or
+   * undefined (no write to check). A write the reads contradict is told
+   * (log, status, badge) until a read shows it, or until the next read once
+   * its checks are spent.
+   */
+  checkWrite(key, device, at) {
+    const pending = this.pendingWrites.get(key);
+    if (!pending || at < (this.writtenAt.get(key) ?? -Infinity)) {
+      if (!pending) {
+        this.warnings.delete(key);
+      }
+      return undefined;
+    }
+    const read = readValueOf(pending.role, device);
+    if (read === pending.expected) {
+      this.pendingWrites.delete(key);
+      this.warnings.delete(key);
+      return 'applied';
+    }
+    pending.checks -= 1;
+    if (pending.checks <= 0) {
+      this.pendingWrites.delete(key);
+    }
+    const text = (language) =>
+      `${word(deviceName(device.name, device.index), language)}${language === 'fr' ? ' : ' : ': '}${
+        describe(pending.role, read)[language]
+      } ≠ ${describe(pending.role, pending.expected)[language]}`;
+    if (!this.warnings.has(key)) {
+      this.logger.warn(
+        `roth-touchline: the command on ${key} did not take effect (read ${read}, written ${pending.expected})`,
+      );
+    }
+    this.warnings.set(key, both(text('en'), text('fr')));
+    return 'not_applied';
+  }
+
+  /** A device read outside a round (a check after a write): its states, its write checked. */
+  storeRead(key, device, at) {
+    const result = this.checkWrite(key, device, at);
+    if (at >= (this.writtenAt.get(key) ?? -Infinity)) {
+      const entry = this.devices.get(key);
+      if (entry) {
+        entry.device = device;
+        entry.at = at;
+      }
+      this.queueStates(device);
+    }
+    return result;
+  }
+
+  /** The status and the badges again, after a check of a write. */
+  async refreshStatus() {
+    if (this.round && !this.offline) {
+      await this.setStatus(true, this.statusMessage());
+    }
+    await this.publishBadges();
+    await this.flush();
   }
 
   /** After a write that left: the write dated in /data, the device read again 5 s and 20 s later. */
   afterWrite(generation, index, key) {
-    this.persist(this.monotonic()).catch(() => {});
+    this.lastWriteAt = this.monotonic();
+    this.persist(this.lastWriteAt).catch(() => {});
     for (const delay of TIMINGS.followUps) {
       const timer = this.timers.setTimeout(() => {
         this.followUps.delete(timer);
@@ -933,25 +1294,27 @@ export class TouchlineApp {
     }
   }
 
-  /** One device read again after a command: its states, when its ids are still the target's. */
+  /**
+   * One device read again after a command: never skipped (it waits its turn
+   * behind a round request or a command); its states and the check of the
+   * write, when its ids are still the target's.
+   */
   async followUp(index, key) {
     const client = this.client;
     const generation = this.generation;
-    if (!client || this.inFlight || this.running) {
+    if (!client) {
       return;
     }
-    const device = await client.device(index, {
-      deadline: this.monotonic() + TIMINGS.requestTimeout,
-    });
+    await this.commandsIdle();
+    if (generation !== this.generation) {
+      return;
+    }
+    const at = this.monotonic();
+    const device = await client.device(index, { deadline: at + TIMINGS.requestTimeout });
     if (generation !== this.generation || device === undefined || platformId(device) !== key) {
       return;
     }
-    const entry = this.devices.get(key);
-    if (entry) {
-      entry.device = device;
-      entry.at = this.monotonic();
-    }
-    this.queueStates(device);
-    await this.flush();
+    this.storeRead(key, device, at);
+    await this.refreshStatus();
   }
 }

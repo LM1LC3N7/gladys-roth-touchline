@@ -18,26 +18,35 @@ export function integerOf(text) {
   return typeof text === 'string' && INTEGER.test(text.trim()) ? Number(text.trim()) : undefined;
 }
 
-/** Hundredths of °C -> tenths of °C (what Gladys shows), within the plausible range, else undefined. */
-export function tenthsOf(text) {
+/** Hundredths of °C, within the plausible range, else undefined. */
+export function hundredthsOf(text) {
   const hundredths = integerOf(text);
   if (hundredths === undefined) {
     return undefined;
   }
   const celsius = hundredths / 100;
-  if (celsius < TEMPERATURE_RANGE.min || celsius > TEMPERATURE_RANGE.max) {
-    return undefined;
-  }
-  return Math.round(hundredths / 10);
+  return celsius < TEMPERATURE_RANGE.min || celsius > TEMPERATURE_RANGE.max
+    ? undefined
+    : hundredths;
 }
+
+/** Hundredths of °C -> tenths of °C (what Gladys shows), within the plausible range, else undefined. */
+export function tenthsOf(text) {
+  const hundredths = hundredthsOf(text);
+  return hundredths === undefined ? undefined : Math.round(hundredths / 10);
+}
+
+/** Control characters, zero-width and bidirectional controls, lone surrogates: never in a name. */
+const UNPRINTABLE =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 /** A device name: printable, cut; undefined when empty. */
 export function nameOf(text) {
   if (typeof text !== 'string') {
     return undefined;
   }
-  // eslint-disable-next-line no-control-regex
-  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim();
+  const clean = text.replace(UNPRINTABLE, ' ').replace(/\s+/g, ' ').trim();
   return clean === '' ? undefined : clean.slice(0, LIMITS.nameLength);
 }
 
@@ -69,8 +78,9 @@ export function parseDevice(values, index) {
     name: nameOf(get('name')),
     temperatureTenths: tenthsOf(get('RaumTemp')),
     targetTenths: tenthsOf(get('SollTemp')),
-    minTenths: tenthsOf(get('SollTempMinVal')),
-    maxTenths: tenthsOf(get('SollTempMaxVal')),
+    targetHundredths: hundredthsOf(get('SollTemp')),
+    minHundredths: hundredthsOf(get('SollTempMinVal')),
+    maxHundredths: hundredthsOf(get('SollTempMaxVal')),
     modeCode: integerOf(get('OPMode')),
     programCode: integerOf(get('WeekProg')),
   };

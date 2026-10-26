@@ -30,11 +30,11 @@ export class TouchlineClient {
   }
 
   /** One request at a time: a request asked during another waits for it (its deadline still holds). */
-  send(options, { deadline, beforeSend } = {}) {
+  send(options, { deadline, beforeSend, onSent } = {}) {
     const run = this.chain.then(async () => {
       const { status, body } = await this.transport(
         { hostname: this.host, port: this.port, ...options },
-        { monotonic: this.monotonic, deadline, beforeSend },
+        { monotonic: this.monotonic, deadline, beforeSend, onSent },
       );
       if (status !== 200) {
         throw new TouchlineError('http', 'unexpected answer', { status, sent: true });
@@ -75,7 +75,7 @@ export class TouchlineClient {
    * else. `value`: a non-negative integer, sent as the reference sends a
    * number (`2250.0` for a setpoint, `1` for a mode).
    */
-  async write(index, parameter, value, { deadline, beforeSend, decimal = false } = {}) {
+  async write(index, parameter, value, { deadline, beforeSend, onSent, decimal = false } = {}) {
     if (!PARAMETER.test(parameter) || !Number.isInteger(index) || index < 0) {
       throw new TouchlineError('bad_request', 'invalid write');
     }
@@ -85,7 +85,7 @@ export class TouchlineClient {
     const text = decimal ? `${value}.0` : `${value}`;
     const body = await this.send(
       { method: 'GET', path: `${API.writePath}?G${index}.${parameter}=${text}` },
-      { deadline: deadline ?? this.monotonic() + TIMINGS.requestTimeout, beforeSend },
+      { deadline: deadline ?? this.monotonic() + TIMINGS.requestTimeout, beforeSend, onSent },
     );
     const echo = Buffer.from(body ?? [])
       .toString('latin1')

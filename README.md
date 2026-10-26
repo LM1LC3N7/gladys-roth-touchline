@@ -28,8 +28,10 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (TouchlineApp)
 - **Reads**: `POST /cgi-bin/ILRReadValues.cgi` for `totalNumberOfDevices`,
   then for the nine parameters of each device `G<i>` (name, setpoint limits,
   week program, mode, setpoint, room temperature, `kurzID`, `ownerKurzID`),
-  every 60 s (30 s – 10 min), one request at a time, a round bounded to
-  45 s. Answers capped at 64 KB and 64 items, read without an XML parser,
+  every 60 s (30 s – 10 min), one request at a time; a round starts no new
+  device past min(45 s, interval − 10 s) and the next one resumes at the
+  first device left (rotation); the controller rests half an interval
+  between rounds; every device failing fails the round. Answers capped at 64 KB and 64 items, read without an XML parser,
   every value checked (plain integers, plausible temperatures).
 - **Pace**: never two reads within the interval, whatever asks (the time of
   the last attempt is kept in `/data`); the clock is read once per decision
@@ -49,9 +51,15 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (TouchlineApp)
   read of the device within 2.5 s, ids checked, bounds = the limits of the
   device within 5 °C and the ceiling, checked again in `beforeSend`; the
   write (`GET /cgi-bin/writeVal.cgi?G<i>.<parameter>=<value>`) leaves by
-  3.5 s or is refused unsent; the echo confirms; a write that may have left
-  is "sent, without confirmation"; follow-up reads at 5 s and 20 s; one
-  command at a time, 3 s apart.
+  3.5 s or is refused unsent (with the true reason, "not sent" only when
+  nothing left); the echo, then a read back equal to the value written,
+  confirm it (within the ack when the echo comes by 2.8 s, else by the
+  follow-up reads at 5 s and 20 s, never skipped); a read back that differs
+  is told in the log, the status and the badge; a round never publishes a
+  value read before a write. A bounded queue (8) serves the commands one at
+  a time, 0.5 s apart from the previous answer, so a scene sets several
+  rooms. The configuration of Gladys is read again (5 s, 15 s, 1 min, 5 min)
+  when it fails at start.
 
 ## Development
 

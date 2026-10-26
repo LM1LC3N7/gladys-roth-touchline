@@ -1,8 +1,16 @@
 // -----------------------------------------------------------------------------
 // Fake timers on a virtual clock: nothing fires by itself; `advance(ms)` moves
-// the clock and runs every timer due on the way, in order, awaiting each.
+// the clock and runs every timer due on the way, in order, letting the
+// promises settle after each (a timer is never awaited, as in Node).
 // `sleep(ms)` is a promise resolved by such a timer (a slow controller).
 // -----------------------------------------------------------------------------
+
+/** Lets the pending promises settle (no timer involved). */
+const drain = async (rounds = 40) => {
+  for (let i = 0; i < rounds; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+};
 
 export function createFakeClock(start) {
   const clock = { now: start };
@@ -49,7 +57,12 @@ export function createFakeClock(start) {
         pending.delete(next.id);
       }
       clock.now = Math.max(clock.now, next.timer.at);
-      await next.timer.fn();
+      // Fired as a real timer is: never awaited (a timer waiting for another
+      // timer would block the clock), then the promises settle.
+      Promise.resolve()
+        .then(() => next.timer.fn())
+        .catch(() => {});
+      await drain();
     }
     // Never back: a slow answer may have moved the clock beyond the target.
     clock.now = Math.max(clock.now, target);

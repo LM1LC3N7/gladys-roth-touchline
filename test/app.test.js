@@ -308,56 +308,61 @@ test('test button: respects the interval and the pause; a read when due; a slow 
 test('commands: off by default; refused unsent with the true reason', async () => {
   const device = created();
   const target = device.features.find((f) => f.external_id === F('target-temperature'));
-  const { app, gladys, start, world } = await setup({ devices: [device] });
+  const { app, start, world, cmd } = await setup({ devices: [device] });
   await start();
-  const ack = await gladys.fake.setValue(device, target, 21);
+  const ack = await cmd(device, target, 21);
   assert.equal(ack.success, false);
   assert.match(ack.error, /commandes de consigne sont désactivées/);
   assert.equal(writes(world).length, 0);
   const mode = device.features.find((f) => f.external_id === F('mode'));
-  const modeAck = await gladys.fake.setValue(device, mode, 'night');
+  const modeAck = await cmd(device, mode, 'night');
   assert.match(modeAck.error, /mode et de programme sont désactivées/);
   const temperature = device.features.find((f) => f.external_id === F('temperature'));
-  assert.match((await gladys.fake.setValue(device, temperature, 1)).error, /lecture seule/);
+  assert.match((await cmd(device, temperature, 1)).error, /lecture seule/);
   app.stop();
 });
 
 test('setpoint: a fresh read, the limits of the device and the ceiling, the echo, follow-up reads', async () => {
   const device = created();
   const target = device.features.find((f) => f.external_id === F('target-temperature'));
-  const { app, gladys, start, wait, world } = await setup({
+  const { app, gladys, start, wait, world, cmd } = await setup({
     devices: [device],
     config: { ...CONFIG, allow_setpoints: true, max_setpoint: 23 },
   });
   await start();
   await wait(SECOND);
   const before = reads(world).length;
-  const ack = await gladys.fake.setValue(device, target, 21.5);
+  const ack = await cmd(device, target, 21.5);
   assert.deepEqual(ack, { success: true });
-  assert.equal(reads(world).length, before + 1, 'a fresh read of the device');
+  assert.equal(reads(world).length, before + 2, 'a fresh read, then the read back that confirms');
   assert.equal(writes(world).length, 1);
   assert.equal(writes(world)[0].path, '/cgi-bin/writeVal.cgi?G0.SollTemp=2150.0');
   assert.equal(world.devices[0].SollTemp, '2150');
   assert.equal(
     gladys.fake.lastState(F('target-temperature')),
-    22,
-    'published by the follow-up read, not by the command',
+    21.5,
+    'published from the read back, never from the command itself',
   );
-  await wait(TIMINGS.followUps[0]);
-  assert.equal(gladys.fake.lastState(F('target-temperature')), 21.5);
   await wait(TIMINGS.followUps[1]);
-  assert.equal(reads(world).length, before + 3, 'two follow-up reads');
+  assert.equal(reads(world).length, before + 4, 'two follow-up reads');
   // Bounds: the ceiling, the limits of the device, steps.
   await wait(TIMINGS.commandSpacing);
-  assert.match((await gladys.fake.setValue(device, target, 23.5)).error, /de 5 à 23 °C/);
-  assert.match((await gladys.fake.setValue(device, target, 4)).error, /de 5 à 23 °C/);
-  assert.match((await gladys.fake.setValue(device, target, 21.55)).error, /pas de 0,1/);
-  assert.match((await gladys.fake.setValue(device, target, '')).error, /pas une température/);
-  assert.match((await gladys.fake.setValue(device, target, null)).error, /pas une température/);
+  assert.match((await cmd(device, target, 23.5)).error, /de 5 à 23 °C/);
+  assert.match((await cmd(device, target, 4)).error, /de 5 à 23 °C/);
+  assert.match((await cmd(device, target, 21.55)).error, /pas de 0,1/);
+  assert.match((await cmd(device, target, '')).error, /pas une température/);
+  assert.match((await cmd(device, target, null)).error, /pas une température/);
   world.devices[0].SollTempMaxVal = '2000';
-  assert.match((await gladys.fake.setValue(device, target, 22)).error, /de 5 à 20 °C/);
+  assert.match((await cmd(device, target, 22)).error, /de 5 à 20 °C/);
+  // The high limit rounded down, never up (review r1, minor 8).
+  world.devices[0].SollTempMaxVal = '2155';
+  assert.match((await cmd(device, target, 21.6)).error, /de 5 à 21.5 °C/);
   world.devices[0].SollTempMaxVal = '';
-  assert.match((await gladys.fake.setValue(device, target, 15)).error, /limites de consigne/);
+  assert.match((await cmd(device, target, 15)).error, /n’ont pas pu être lues/);
+  // Inconsistent limits are told as such (review r1, minor 9).
+  world.devices[0].SollTempMaxVal = '1000';
+  world.devices[0].SollTempMinVal = '2000';
+  assert.match((await cmd(device, target, 15)).error, /incohérentes/);
   assert.equal(writes(world).length, 1, 'nothing else written');
   app.stop();
 });
@@ -366,20 +371,20 @@ test('mode and program: one write each, the option checked before the first byte
   const device = created();
   const mode = device.features.find((f) => f.external_id === F('mode'));
   const program = device.features.find((f) => f.external_id === F('program'));
-  const { app, gladys, start, wait, world } = await setup({
+  const { app, gladys, start, wait, world, cmd } = await setup({
     devices: [device],
     config: { ...CONFIG, allow_modes: true },
   });
   await start();
-  assert.deepEqual(await gladys.fake.setValue(device, mode, 'holiday'), { success: true });
+  assert.deepEqual(await cmd(device, mode, 'holiday'), { success: true });
   assert.equal(writes(world).at(-1).path, '/cgi-bin/writeVal.cgi?G0.OPMode=2');
   await wait(TIMINGS.commandSpacing + TIMINGS.followUps[1]);
   assert.equal(gladys.fake.lastState(F('mode')), 'holiday');
-  assert.deepEqual(await gladys.fake.setValue(device, program, 'program-2'), { success: true });
+  assert.deepEqual(await cmd(device, program, 'program-2'), { success: true });
   assert.equal(writes(world).at(-1).path, '/cgi-bin/writeVal.cgi?G0.WeekProg=2');
   await wait(TIMINGS.commandSpacing + TIMINGS.followUps[1]);
-  assert.match((await gladys.fake.setValue(device, program, 'program-9')).error, /inconnu/);
-  assert.match((await gladys.fake.setValue(device, mode, 1)).error, /inconnu/);
+  assert.match((await cmd(device, program, 'program-9')).error, /inconnu/);
+  assert.match((await cmd(device, mode, 1)).error, /inconnu/);
   // The option turned off between the arrival and the write: nothing sent.
   const release = world.hold();
   const pending = gladys.fake.setValue(device, mode, 'night');
@@ -392,50 +397,293 @@ test('mode and program: one write each, the option checked before the first byte
   app.stop();
 });
 
-test('commands: the position is checked (another device there), one at a time, spaced, refused in a pause', async () => {
+test('commands: the position is checked, no thermostat there, unknown device, refused in a pause', async () => {
   const device = created();
   const target = device.features.find((f) => f.external_id === F('target-temperature'));
-  const { app, gladys, start, wait, world } = await setup({
+  const { app, start, wait, world, cmd } = await setup({
     devices: [device],
     config: { ...CONFIG, allow_setpoints: true },
   });
   await start();
   world.devices.unshift(DEVICE({ kurzID: '5' }));
-  assert.match((await gladys.fake.setValue(device, target, 21)).error, /Un autre appareil répond/);
+  assert.match((await cmd(device, target, 21)).error, /Un autre appareil répond/);
   assert.equal(writes(world).length, 0);
   await wait(MINUTE);
-  assert.deepEqual(await gladys.fake.setValue(device, target, 21), { success: true });
+  assert.deepEqual(await cmd(device, target, 21), { success: true });
   assert.equal(writes(world)[0].path, '/cgi-bin/writeVal.cgi?G1.SollTemp=2100.0');
-  assert.match(
-    (await gladys.fake.setValue(device, target, 20)).error,
-    /Une autre commande est en cours/,
-  );
-  await wait(TIMINGS.commandSpacing + TIMINGS.followUps[1]);
-  const release = world.hold();
-  const first = gladys.fake.setValue(device, target, 20);
-  await settle();
-  const second = await gladys.fake.setValue(device, target, 19);
-  assert.match(second.error, /Une autre commande est en cours/);
-  release();
-  assert.deepEqual(await first, { success: true });
-  // Unknown device, pause.
+  // Nothing answers at the position now (review r1, minor 9): the true reason.
+  world.devices.length = 1;
+  assert.match((await cmd(device, target, 20)).error, /Aucun thermostat ne répond/);
   const other = created({ kurzID: '9' });
   const otherTarget = other.features.find(
     (f) => f.external_id === F('target-temperature', '100-9'),
   );
-  await wait(TIMINGS.commandSpacing + TIMINGS.followUps[1]);
-  assert.match((await gladys.fake.setValue(other, otherTarget, 20)).error, /pas connu/);
+  assert.match((await cmd(other, otherTarget, 20)).error, /pas connu/);
+  // The follow-ups of the write are done before the controller fails.
+  await wait(TIMINGS.followUps[1]);
   world.failNetwork();
   await wait(MINUTE);
-  assert.match((await gladys.fake.setValue(device, target, 20)).error, /en pause/);
-  assert.equal(writes(world).length, 2);
+  assert.match((await cmd(device, target, 20)).error, /en pause/);
+  assert.equal(writes(world).length, 1);
+  app.stop();
+});
+
+test('scene: four rooms set in a row, or at once, are all written, one at a time (review r1, point 3)', async () => {
+  const rooms = [1, 2, 3, 4].map((id) => DEVICE({ kurzID: String(id) }));
+  const world = fakeController({ devices: rooms });
+  const devices = [1, 2, 3, 4].map((id, i) => created({ kurzID: String(id) }, { index: i }));
+  const targets = devices.map((d) =>
+    d.features.find((f) => f.external_id.endsWith(':target-temperature')),
+  );
+  const { app, gladys, start, act, cmd } = await setup({
+    devices,
+    world,
+    config: { ...CONFIG, allow_setpoints: true },
+  });
+  await start();
+  // In a row: each action waits for the ack of the previous one (a Gladys scene in series).
+  for (let i = 0; i < 4; i += 1) {
+    assert.deepEqual(await cmd(devices[i], targets[i], 19), { success: true }, `room ${i + 1}`);
+  }
+  assert.deepEqual(
+    world.devices.map((d) => d.SollTemp),
+    ['1900', '1900', '1900', '1900'],
+  );
+  // At once (a Gladys scene in parallel): queued, served one at a time, all written.
+  const acks = await act(
+    Promise.all(devices.map((d, i) => gladys.fake.setValue(d, targets[i], 18))),
+  );
+  assert.deepEqual(
+    acks,
+    devices.map(() => ({ success: true })),
+  );
+  assert.deepEqual(
+    world.devices.map((d) => d.SollTemp),
+    ['1800', '1800', '1800', '1800'],
+  );
+  // One write at a time, spaced from the answer of the previous one.
+  const at = writes(world).map((r) => r.at);
+  for (let i = 1; i < at.length; i += 1) {
+    assert.ok(at[i] - at[i - 1] >= TIMINGS.commandSpacing, `write ${i}: ${at[i] - at[i - 1]} ms`);
+  }
+  // The queue is bounded: beyond 8 waiting, refused at once, nothing sent for it.
+  const many = Array.from({ length: 10 }, () => gladys.fake.setValue(devices[0], targets[0], 17));
+  const results = await act(Promise.all(many));
+  assert.match(results[9].error, /8 commandes attendent déjà/);
+  assert.ok(results.slice(0, 9).some((r) => r.success));
+  assert.ok(
+    results
+      .filter((r) => !r.success && !/attendent déjà/.test(r.error))
+      .every((r) => /Non envoyée à temps/.test(r.error)),
+    'a command that cannot leave in time says why',
+  );
+  app.stop();
+});
+
+test('confirmation: an echo without effect is told, in the ack, the status and the badge (review r1, point 1)', async () => {
+  const device = created();
+  const target = device.features.find((f) => f.external_id === F('target-temperature'));
+  const { app, gladys, start, wait, world, cmd, lines } = await setup({
+    devices: [device],
+    config: { ...CONFIG, allow_setpoints: true },
+  });
+  await start();
+  world.echoOnly.add('SollTemp');
+  const ack = await cmd(device, target, 21);
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /la relecture donne 22 °C au lieu de 21 °C/);
+  assert.equal(world.devices[0].SollTemp, '2200');
+  assert.ok(lines.some((l) => /did not take effect \(read 2200, written 2100\)/.test(l)));
+  assert.match(
+    gladys.fake.connectionStatus.message.fr,
+    /Commande sans effet : Living room \(Touchline\) : 22 °C ≠ 21 °C/,
+  );
+  assert.equal(gladys.fake.transports.at(-1).degraded, true);
+  // The follow-ups still see it; once the checks are spent, the next read clears the warning.
+  await wait(TIMINGS.followUps[1]);
+  assert.match(gladys.fake.connectionStatus.message.en, /Command without effect/);
+  await wait(MINUTE);
+  assert.doesNotMatch(gladys.fake.connectionStatus.message.en, /Command without effect/);
+  assert.equal(gladys.fake.transports.at(-1).degraded, undefined);
+  // A slow echo (after 2.8 s): no time to read back within the ack; the follow-up confirms.
+  world.echoOnly.clear();
+  world.writeCost = 3 * SECOND;
+  const slow = await cmd(device, target, 21);
+  assert.match(slow.error, /envoyée et renvoyée par le régulateur : vérification/);
+  assert.equal(world.devices[0].SollTemp, '2100');
+  await wait(TIMINGS.followUps[0]);
+  assert.equal(gladys.fake.lastState(F('target-temperature')), 21);
+  assert.doesNotMatch(gladys.fake.connectionStatus.message.en, /Command without effect/);
+  app.stop();
+});
+
+test('confirmation: a round never publishes a value read before a write; follow-ups are never skipped (review r1, point 1)', async () => {
+  const device = created();
+  const target = device.features.find((f) => f.external_id === F('target-temperature'));
+  const world = fakeController({ devices: [DEVICE(), DEVICE({ kurzID: '2' })] });
+  const { app, gladys, start, clock } = await setup({
+    devices: [device],
+    world,
+    config: { ...CONFIG, allow_setpoints: true },
+  });
+  await start();
+  clock.now += MINUTE;
+  let ack;
+  // Round 2: the count, G0 (22 °C), then while G1 is read the user sets G0 to 21 °C.
+  world.queue.push(
+    () => undefined,
+    () => undefined,
+    () => {
+      ack = gladys.fake.setValue(device, target, 21);
+      return undefined;
+    },
+  );
+  await app.tick();
+  assert.deepEqual(await ack, { success: true });
+  assert.equal(world.devices[0].SollTemp, '2100');
+  const published = gladys.fake.states
+    .filter((s) => s.device_feature_external_id === F('target-temperature'))
+    .map((s) => s.state);
+  assert.equal(published.at(-1), 21, 'the 22 °C read before the write is not published after it');
+  // A follow-up during a round waits its turn instead of being skipped.
+  app.running = new Promise(() => {});
+  const before = reads(world).length;
+  await app.followUp(0, '100-1');
+  assert.equal(reads(world).length, before + 1);
+  app.running = undefined;
+  app.stop();
+});
+
+test('rotation: a slow controller, every device read in turn, the controller rests (review r1, point 2)', async () => {
+  const world = fakeController({
+    devices: [0, 1, 2, 3, 4, 5].map((i) => DEVICE({ kurzID: String(i + 1) })),
+  });
+  const { app, start, wait } = await setup({ world, config: { ...CONFIG, poll_interval: 30 } });
+  world.cost = 9 * SECOND;
+  await start();
+  await wait(3 * MINUTE);
+  const rounds = [];
+  for (const r of reads(world)) {
+    const body = String(r.body);
+    if (body.includes('totalNumberOfDevices')) rounds.push({ at: r.at, end: r.at, read: [] });
+    else rounds.at(-1).read.push(Number(/G(\d+)\./.exec(body)[1]));
+    rounds.at(-1).end = r.at + world.cost;
+  }
+  assert.ok(rounds.length >= 4, `${rounds.length} rounds`);
+  const seen = new Set(rounds.slice(0, 3).flatMap((r) => r.read));
+  assert.deepEqual([...seen].sort(), [0, 1, 2, 3, 4, 5], 'all read within three rounds');
+  assert.deepEqual(
+    rounds[1].read.slice(0, 1),
+    [rounds[0].read.at(-1) + 1],
+    'the next round goes on',
+  );
+  for (let i = 1; i < rounds.length; i += 1) {
+    assert.ok(rounds[i].at - rounds[i - 1].end >= 15 * SECOND - 1, `rest before round ${i}`);
+    assert.ok(rounds[i].at - rounds[i - 1].at >= 30 * SECOND - 1, `interval before round ${i}`);
+  }
+  // The budget: no new device past 20 s (interval 30 s minus 10 s).
+  assert.ok(rounds.every((r) => r.read.length <= 3));
+  app.stop();
+});
+
+test('configuration of Gladys unreadable at start: new tries, a status, commands refused with the true reason (review r1, point 4)', async () => {
+  const device = created();
+  const target = device.features.find((f) => f.external_id === F('target-temperature'));
+  const { app, gladys, wait, world, cmd } = await setup({ devices: [device] });
+  let calls = 0;
+  await app.onConnected(async () => {
+    calls += 1;
+    if (calls <= 2) throw new Error('Request timeout');
+    return { ...CONFIG, allow_setpoints: true };
+  });
+  assert.equal(gladys.fake.connectionStatus.connected, false);
+  assert.match(
+    gladys.fake.connectionStatus.message.fr,
+    /pas encore pu être lue\. Nouvel essai dans 5 s/,
+  );
+  assert.match((await gladys.fake.setValue(device, target, 21)).error, /pas encore chargée/);
+  await wait(5 * SECOND);
+  assert.match(gladys.fake.connectionStatus.message.en, /New try in 15 s/);
+  assert.equal(reads(world).length, 0);
+  await wait(15 * SECOND);
+  assert.equal(calls, 3);
+  assert.equal(counts(world).length, 1, 'started once the configuration is read');
+  assert.equal(gladys.fake.connectionStatus.connected, true);
+  assert.deepEqual(await cmd(device, target, 21), { success: true });
+  app.shutdown();
+});
+
+test('a write that never left is "not sent", with its reason, and no follow-up (review r1, point 5)', async () => {
+  const device = created();
+  const target = device.features.find((f) => f.external_id === F('target-temperature'));
+  const { app, start, world, cmd } = await setup({
+    devices: [device],
+    config: { ...CONFIG, allow_setpoints: true },
+  });
+  await start();
+  world.refuseWrite = true;
+  const ack = await cmd(device, target, 21);
+  assert.match(ack.error, /Commande non envoyée : le régulateur est injoignable/);
+  assert.equal(world.devices[0].SollTemp, '2200');
+  assert.equal(app.followUps.size, 0);
+  assert.equal(app.lastWriteAt, undefined, 'no spacing for a write that never left');
+  app.stop();
+});
+
+test('freshness: a device created or updated after a failed read gets no old value (review r1, point 6)', async () => {
+  const { app, gladys, start, wait, world } = await setup();
+  await start();
+  world.failNetwork();
+  await wait(MINUTE);
+  assert.equal(gladys.fake.connectionStatus.connected, false);
+  await gladys.fake.deviceCreated(created());
+  await gladys.fake.deviceUpdated(created({ name: 'Renamed' }));
+  await wait(SECOND);
+  assert.equal(gladys.fake.states.length, 0);
+  app.stop();
+});
+
+test('every device failing is a failed round, not "connected" (review r1, minor 7)', async () => {
+  const world = fakeController({ devices: [DEVICE(), DEVICE({ kurzID: '2' })] });
+  const { app, gladys, start } = await setup({ world });
+  world.queue.push(
+    () => undefined,
+    { status: 500, body: Buffer.from('x') },
+    { status: 500, body: Buffer.from('x') },
+  );
+  await start();
+  assert.equal(gladys.fake.connectionStatus.connected, false);
+  assert.match(
+    gladys.fake.connectionStatus.message.en,
+    /answered an error \(HTTP 500\)\. New try in 1 min/,
+  );
+  assert.ok(app.pause);
+  app.stop();
+});
+
+test('the status lists 5 unread devices at most (review r1, minor 11)', async () => {
+  const world = fakeController();
+  const { app, gladys, start } = await setup({ world });
+  world.queue.push({
+    status: 200,
+    body: Buffer.from(
+      '<body><item_list><i><n>totalNumberOfDevices</n><v>999999</v></i></item_list></body>',
+    ),
+  });
+  await start();
+  const message = gladys.fake.connectionStatus.message.en;
+  assert.match(
+    message,
+    /1\/32 devices read\. Not read: G1 .*G5 \(not in the answer\) and 26 more\./,
+  );
+  assert.ok(message.length < 300, `${message.length} characters`);
   app.stop();
 });
 
 test('commands: too slow is refused unsent; a write without echo is "sent, without confirmation"', async () => {
   const device = created();
   const target = device.features.find((f) => f.external_id === F('target-temperature'));
-  const { app, gladys, start, wait, world, clock } = await setup({
+  const { app, gladys, start, wait, world, clock, cmd } = await setup({
     devices: [device],
     config: { ...CONFIG, allow_setpoints: true },
   });
@@ -450,14 +698,14 @@ test('commands: too slow is refused unsent; a write without echo is "sent, witho
   assert.equal(writes(world).length, 0);
   await wait(MINUTE);
   world.noEcho.add('SollTemp');
-  const ack = await gladys.fake.setValue(device, target, 21);
+  const ack = await cmd(device, target, 21);
   assert.match(ack.error, /envoyée, sans confirmation/);
   assert.equal(writes(world).length, 1);
   world.noEcho.clear();
   // The controller refuses the write (4xx): told so, nothing else.
   await wait(TIMINGS.commandSpacing);
   world.queue.push(() => undefined, { status: 404, body: Buffer.from('x') });
-  assert.match((await gladys.fake.setValue(device, target, 21)).error, /refusé la commande/);
+  assert.match((await cmd(device, target, 21)).error, /refusé la commande/);
   assert.equal(writes(world).length, 2);
   app.stop();
 });
