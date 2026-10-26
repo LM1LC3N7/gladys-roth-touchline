@@ -1,45 +1,113 @@
 // -----------------------------------------------------------------------------
-// Integration configuration.
-//
-// The configuration is filled in by the user in Gladys, from the `config_schema`
-// declared in `gladys-assistant-integration.json`. The SDK fetches it for you
-// (`gladys.getConfig()`) and notifies you of every change through
-// `gladys.onConfigUpdated()`.
-//
-// This module only provides defaults and normalizes the received object, so the
-// rest of the code never has to deal with `undefined`.
+// The configuration of the manifest `config_schema`, normalized.
 // -----------------------------------------------------------------------------
 
-// Defaults: they MUST stay consistent with the `default` values declared in the
-// `config_schema` of the manifest.
-export const DEFAULT_CONFIG = {
-  latitude: 48.8566, // Paris
-  longitude: 2.3522,
-  unit: 'celsius', // 'celsius' | 'fahrenheit'
-  // Seconds between two reads of the polled sensors. Gladys polls at most once
-  // a minute: slower intervals are applied by skipping polls (see
-  // createPoller in src/devices/index.js).
-  poll_frequency: 300,
-  // Reserved key (NOT in config_schema): because the manifest declares both
-  // 'local' and 'cloud' in its `transports` field, Gladys shows a standard
-  // "Prefer the local connection" toggle and sends the user's choice here.
-  // Read-only for the integration; defaults to true.
-  GLADYS_PREFER_LOCAL: true,
+import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
+import { API, POLL_INTERVAL, SETPOINT } from './constants.js';
+
+/** Defaults, mirrored by the manifest (checked by test/manifest.test.js). */
+export const DEFAULTS = {
+  allow_setpoints: false,
+  allow_modes: false,
+  max_setpoint: SETPOINT.ceilingDefault,
+  poll_interval: POLL_INTERVAL.default,
+  language: 'fr',
 };
 
+export const LANGUAGES = ['fr', 'en'];
+
+const HOSTNAME =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
 /**
- * Merge the user config with the defaults.
- * @param {Record<string, unknown>} raw config returned by the SDK
+ * The address typed by the user: `{ host, port }`, `{ error: 'path' }` when it
+ * holds a path, a query or credentials (a pasted URL), `{ error: 'https' }`
+ * for https (the controller answers over http on the local network),
+ * `{ error: 'invalid' }` when it is no IP address nor host name, `{}` when
+ * empty. "http://" and ":port" are accepted.
  */
+export function parseAddress(raw) {
+  let text = String(raw ?? '').trim();
+  if (text === '') {
+    return {};
+  }
+  if (/^https:\/\//i.test(text)) {
+    return { error: 'https' };
+  }
+  text = text.replace(/^http:\/\//i, '').replace(/\/$/, '');
+  if (/[/?#@\s]/.test(text)) {
+    return { error: 'path' };
+  }
+  let host = text;
+  let port;
+  const bracketed = /^\[([^\]]+)\](?::(\d{1,5}))?$/.exec(text);
+  if (bracketed) {
+    host = bracketed[1];
+    port = bracketed[2];
+  } else if (isIP(text) !== 6) {
+    const withPort = /^([^:]+):(\d{1,5})$/.exec(text);
+    if (withPort) {
+      host = withPort[1];
+      port = withPort[2];
+    } else if (text.includes(':')) {
+      return { error: 'invalid' };
+    }
+  }
+  if (isIP(host) === 0 && !HOSTNAME.test(host)) {
+    return { error: 'invalid' };
+  }
+  const portNumber = port === undefined ? API.defaultPort : Number(port);
+  if (portNumber < 1 || portNumber > 65535) {
+    return { error: 'invalid' };
+  }
+  return { host: host.toLowerCase(), port: portNumber };
+}
+
+/** The key of a controller in /data: a hash of its address and port. */
+export const controllerKey = (host, port) =>
+  host
+    ? createHash('sha256')
+        .update(`roth-touchline:${host}:${port}`, 'utf8')
+        .digest('hex')
+        .slice(0, 32)
+    : '';
+
+const number = (value) =>
+  value === undefined || value === null || value === '' ? NaN : Number(value);
+
+const clamp = (value, { min, max }, fallback) =>
+  Number.isFinite(value) ? Math.round(Math.max(min, Math.min(max, value))) : fallback;
+
+/** A boolean option: true only when the value is `true` or the text "true". */
+const flag = (value, fallback) =>
+  value === true || value === 'true'
+    ? true
+    : value === false || value === 'false'
+      ? false
+      : fallback;
+
 export function normalizeConfig(raw = {}) {
+  const address = parseAddress(raw?.host);
+  const language = String(raw?.language ?? DEFAULTS.language)
+    .trim()
+    .toLowerCase();
   return {
-    ...DEFAULT_CONFIG,
-    ...raw,
-    // Force the types: config may arrive as strings from a form.
-    latitude: Number(raw.latitude ?? DEFAULT_CONFIG.latitude),
-    longitude: Number(raw.longitude ?? DEFAULT_CONFIG.longitude),
-    poll_frequency: Number(raw.poll_frequency ?? DEFAULT_CONFIG.poll_frequency),
-    // The preference is a boolean; anything but an explicit false means true.
-    GLADYS_PREFER_LOCAL: raw.GLADYS_PREFER_LOCAL !== false,
+    host: address.host ?? '',
+    port: address.port ?? API.defaultPort,
+    addressError: address.error,
+    key: controllerKey(address.host, address.port ?? API.defaultPort),
+    allowSetpoints: flag(raw?.allow_setpoints, DEFAULTS.allow_setpoints),
+    allowModes: flag(raw?.allow_modes, DEFAULTS.allow_modes),
+    ceiling: clamp(
+      number(raw?.max_setpoint),
+      { min: SETPOINT.ceilingMin, max: SETPOINT.max },
+      DEFAULTS.max_setpoint,
+    ),
+    pollInterval: clamp(number(raw?.poll_interval), POLL_INTERVAL, DEFAULTS.poll_interval),
+    language: LANGUAGES.includes(language) ? language : DEFAULTS.language,
   };
 }
+
+/** True when the address is complete and valid. */
+export const isComplete = (config) => config.host !== '' && config.addressError === undefined;
