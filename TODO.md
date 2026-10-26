@@ -91,10 +91,10 @@ up to date at the end of every milestone.
   `~/code/ref/lot16/pytouchline_extended` (commit dc510d7). Python: ported,
   credited in the README and `THIRD_PARTY_NOTICES.md` (full MIT notice,
   copied into the image). Only runtime dependency: the SDK.
-- **SDK ^0.15.0**: 0.16.0 was tagged but not on npm on 2026-10-25
-  (`npm view` gave 0.15.0): `package.json` and the lock were moved from the
-  template's `^0.16.0` to `^0.15.0`. Migration to 0.16 with the planned
-  wave (keywords, countries, `gladys_version >= 5.3.0`).
+- **SDK `^0.16.0`** (2026-10-26, migration wave 1): 0.16.0 is on npm since
+  2026-10-25 (a stale npm cache said otherwise); it adds the ai, tts and music
+  types; no effect here (`should_poll` explicit or `poll_frequency` unused). `keywords`, `countries` and `gladys_version >= 5.3.0` wait until
+  Gladys 5.3 is widespread.
 - **No `poll_frequency`**: the neighbour modules keep their own read loop;
   the core's `device.poll` would not give the pacing kept across restarts.
 - **Neighbour modules**: `gladys-touchline-sl` (commands behind options,

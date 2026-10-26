@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TIMINGS } from '../src/constants.js';
@@ -39,8 +39,9 @@ test('normalizeMemory: repaired, capped from now, nothing kept for another contr
   assert.equal(normalizeMemory({ lastAttemptAt: 'x', key: KEY, pause: 'x' }, now).pause, null);
 });
 
-test('fileStore: a fresh install is null, a file is written 0600 through a temporary file', async () => {
+test('fileStore: a fresh install is null, a file is written 0600 through a temporary file', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'roth-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = fileStore(join(dir, 'state.json'));
   assert.equal(await store.load(), null);
   await Promise.all([store.save({ a: 1 }), store.save({ a: 2 })]);
