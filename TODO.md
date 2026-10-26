@@ -31,6 +31,10 @@ up to date at the end of every milestone.
       created or updated after a failure; every device failing = failed
       round; limits rounded inward; true reasons; clean names; bounded
       status; `<v/>`; docs.
+- [x] **Review 2 fixes** (2026-10-26, review of 981b0e1): devices left
+      untried by the budget stay known, commandable and listed; the room
+      minimum above the ceiling told as such; a round request named as the
+      cause of a late command before the queue.
 - [ ] **Milestone 2 — real controller**: run against a real Touchline
       Ethernet controller (see "To check"); turn the answers (anonymized)
       into fixtures.
@@ -171,7 +175,10 @@ up to date at the end of every milestone.
   unread (listed in the status, 5 at most then "and N more", degraded
   badge); every device failing fails the round (review r1, minor 7); a
   round starts no new device past min(45 s, interval − 10 s) and the next
-  round starts at the first device left (rotation); an internal error
+  round starts at the first device left (rotation); a device the budget
+  left untried keeps its previous entry (position and age of origin, never
+  republished as fresh, still commandable and listed), its badge degraded
+  only past two rounds missed (review r2, point 14); an internal error
   pauses one interval and schedules the next read; a reconnection to Gladys
   clears nothing.
 - **`/data`**: `lastAttemptAt`, `key` (hash of address and port), `pause`,

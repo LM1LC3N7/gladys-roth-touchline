@@ -168,6 +168,11 @@ export const ERRORS = {
       `The controller echoed the value but the read back gives ${read.en} instead of ${written.en}.`,
       `Le régulateur a renvoyé la valeur mais la relecture donne ${read.fr} au lieu de ${written.fr}.`,
     ),
+  minAboveCeiling: (min, ceiling) =>
+    both(
+      `The minimum of this room (${min} °C) is above the setpoint ceiling (${ceiling} °C): raise the ceiling in the configuration. Command not sent.`,
+      `Le minimum de cette pièce (${String(min).replace('.', ',')} °C) dépasse le plafond des consignes (${ceiling} °C) : relevez le plafond dans la configuration. Commande non envoyée.`,
+    ),
   inconsistentLimits: both(
     'The setpoint limits of the device are inconsistent (minimum above maximum): command not sent.',
     'Les limites de consigne de l’appareil sont incohérentes (minimum au-dessus du maximum) : commande non envoyée.',

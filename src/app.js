@@ -683,7 +683,19 @@ export class TouchlineApp {
       this.checkWrite(key, device, at);
       this.queueStates(device);
     }
-    this.round = { count, unread: unread.sort((a, b) => a.index - b.index) };
+    // Positions the budget left untried keep their previous entry (index and
+    // age of origin): never republished as fresh, still commandable (a command
+    // reads the position again and checks the ids before writing), still in
+    // the Discovery list. A position tried and failed, or absent, is not
+    // carried; the badge turns degraded past two rounds missed.
+    const read = this.devices.size;
+    const untried = new Set(unread.filter((u) => u.code === 'budget').map((u) => u.index));
+    for (const [key, entry] of previous) {
+      if (!this.devices.has(key) && untried.has(entry.index)) {
+        this.devices.set(key, { ...entry, missed: (entry.missed ?? 0) + 1 });
+      }
+    }
+    this.round = { count, read, unread: unread.sort((a, b) => a.index - b.index) };
     await this.persist(mono);
     await this.setStatus(true, this.statusMessage());
     await this.publishDevices();
@@ -711,7 +723,7 @@ export class TouchlineApp {
   /** "Connected: 2/3 devices read. Not read: G2 (no answer in time)." (5 listed at most) */
   statusMessage() {
     const { count, unread } = this.round;
-    let message = count === 0 ? T.noDevice : T.connected(this.devices.size, count);
+    let message = count === 0 ? T.noDevice : T.connected(this.round.read, count);
     if (count > 0 && unread.length > 0) {
       const reasons = {
         budget: both('round too long', 'lecture trop longue'),
@@ -806,7 +818,7 @@ export class TouchlineApp {
     if (this.offline) {
       return { transport: DEVICE_TRANSPORTS.UNREACHABLE };
     }
-    if (this.round && !this.devices.has(key)) {
+    if (this.round && (!this.devices.has(key) || this.devices.get(key).missed > 2)) {
       return {
         transport: DEVICE_TRANSPORTS.UNREACHABLE,
         degraded: true,
@@ -963,7 +975,13 @@ export class TouchlineApp {
       this.config.ceiling * 10,
       Math.floor(device.maxHundredths / 10),
     );
-    return low <= high ? { low, high } : { error: ERRORS.inconsistentLimits };
+    if (low <= high) {
+      return { low, high };
+    }
+    if (low > this.config.ceiling * 10) {
+      return { error: ERRORS.minAboveCeiling(low / 10, this.config.ceiling) };
+    }
+    return { error: ERRORS.inconsistentLimits };
   }
 
   /**
@@ -1069,12 +1087,16 @@ export class TouchlineApp {
     }
   }
 
-  /** Too late to send: the true cause (the commands before it, a round, or the controller). */
+  /**
+   * Too late to send: the true cause. A request of a round in progress when
+   * the command was served comes first; then the commands that were before
+   * it (they took its time); else the controller itself.
+   */
   lateError(ahead, roundBusy) {
-    if (ahead > 0) {
-      return this.refusal(ERRORS.queueLate(ahead));
+    if (roundBusy) {
+      return this.refusal(ERRORS.busy);
     }
-    return this.refusal(roundBusy ? ERRORS.busy : ERRORS.tooSlow);
+    return this.refusal(ahead > 0 ? ERRORS.queueLate(ahead) : ERRORS.tooSlow);
   }
 
   async command({ target, wanted, received, ahead }) {
@@ -1110,6 +1132,7 @@ export class TouchlineApp {
     }
     const start = this.monotonic();
     if (start > latest) {
+      // Its time went in a round request (first), or in the commands before it.
       throw this.lateError(ahead, roundBusy);
     }
     if (this.pause && this.pauseLeft(start) > 0) {

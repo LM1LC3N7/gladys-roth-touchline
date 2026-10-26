@@ -94,7 +94,7 @@ pas au dixième de degré, ou mode/programme inconnu ; 8 commandes déjà en
 attente ; lecture du régulateur en pause après des échecs ; pièce inconnue ;
 aucun thermostat ou un autre thermostat à sa position ; état actuel illisible
 (lecture fraîche en échec ou réponse invalide) ; limites de consigne
-illisibles ou incohérentes ; adresse ou option changée pendant la commande ;
+illisibles ou incohérentes, ou minimum de la pièce au-dessus du plafond ; adresse ou option changée pendant la commande ;
 régulateur trop lent, lecture en cours trop longue, ou trop de commandes
 avant elle pour partir à temps ; connexion refusée avant l'envoi (« commande
 non envoyée » et la raison). Une écriture partie peut aussi revenir « le
@@ -107,7 +107,9 @@ régulateur a refusé la commande » (réponse d'erreur 4xx).
   lire ; si toutes échouent, c'est une lecture en échec (pause ci-dessous).
   Une lecture n'entame plus de nouvelle pièce passé 45 s (et jamais au-delà
   de l'intervalle moins 10 s) ; la suivante reprend à la première pièce non
-  lue, si bien qu'aucune n'est oubliée. Le régulateur se repose au moins une
+  lue, si bien qu'aucune n'est oubliée ; une pièce pas encore relue garde ses
+  dernières valeurs et reste commandable, son badge passe en dégradé après
+  deux lectures sans elle. Le régulateur se repose au moins une
   demi-intervalle entre deux lectures. Jamais deux lectures à moins d'un
   intervalle, même après un redémarrage (l'heure de la dernière tentative
   est gardée dans `/data` à chaque lecture).

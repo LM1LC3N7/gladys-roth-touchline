@@ -90,7 +90,8 @@ the integration not loaded yet; option off; value out of bounds, not a tenth
 of a degree, or unknown mode/program; 8 commands already waiting; reads of
 the controller paused after failures; room unknown; no thermostat or another
 thermostat at its position; current state unreadable (fresh read failed or
-invalid answer); setpoint limits unreadable or inconsistent; address or
+invalid answer); setpoint limits unreadable or inconsistent, or the minimum of the room
+above the ceiling; address or
 option changed during the command; controller too slow, a read in progress
 too long, or too many commands before it to leave in time; connection
 refused before sending ("command not sent" and the reason). A write that
@@ -103,7 +104,9 @@ answer).
   time; a room that does not answer leaves the others read; when all fail,
   the read failed (pause below). A read starts no new room past 45 s (and
   never past the interval minus 10 s); the next one starts at the first room
-  left unread, so none is forgotten. The controller rests at least half an
+  left unread, so none is forgotten; a room not read again yet keeps its
+  last values and stays commandable, its badge turns degraded after two
+  reads without it. The controller rests at least half an
   interval between two reads. Never two reads
   within an interval, even across a restart (the time of the last attempt is
   kept in `/data` at each read).

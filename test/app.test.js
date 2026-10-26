@@ -586,6 +586,97 @@ test('rotation: a slow controller, every device read in turn, the controller res
   app.stop();
 });
 
+test('rotation: devices the budget left untried stay known, commandable and listed (review r2, point 14)', async () => {
+  const raws = [0, 1, 2, 3, 4, 5].map((i) => DEVICE({ kurzID: String(i + 1), name: `Room ${i}` }));
+  const world = fakeController({ devices: raws });
+  const first = created({ kurzID: '1', name: 'Room 0' });
+  const target = first.features.find((f) => f.external_id.endsWith(':target-temperature'));
+  const { app, gladys, start, wait, cmd } = await setup({
+    world,
+    devices: [first],
+    config: { ...CONFIG, poll_interval: 30, allow_setpoints: true },
+  });
+  world.cost = 9 * SECOND;
+  await start();
+  const round1 = app.round;
+  assert.ok(
+    round1.unread.some((u) => u.code === 'budget'),
+    'the first round is cut by the budget',
+  );
+  // Round 1 ends at 27 s; round 2 starts at 42 s (rest of 15 s) and ends at 69 s.
+  await wait(43 * SECOND);
+  const round2 = app.round;
+  assert.ok(round2.read > 0 && round2.read < 6);
+  assert.ok(
+    !reads(world)
+      .slice(-round2.read)
+      .some((r) => /G0\./.test(String(r.body))),
+    'G0 not in round 2',
+  );
+  // G0, read in round 1 only: still known, badge local, every device read so far listed.
+  assert.ok(app.devices.has('100-1'));
+  const badge = gladys.fake.transports
+    .filter((t) => t.device_external_id === F('x').replace(/:x$/, ''))
+    .at(-1);
+  assert.equal(badge.transport, 'local');
+  assert.equal(badge.degraded, undefined);
+  const listed = gladys.fake.discoveredDevices;
+  assert.ok(listed.length >= round1.read + round2.read, `${listed.length} listed`);
+  const g0 = listed.find((d) => d.external_id === 'ext:roth:touchline:100-1');
+  assert.ok(g0.params.some((p) => p.name === 'position' && p.value === 'G0'));
+  assert.match(
+    gladys.fake.connectionStatus.message.en,
+    new RegExp(`${round2.read}/6 devices read`),
+  );
+  // A setpoint on G0 is written (the command reads the position again first).
+  world.cost = 0;
+  await wait(20 * SECOND);
+  assert.deepEqual(await cmd(first, target, 21), { success: true });
+  assert.equal(world.devices[0].SollTemp, '2100');
+  app.stop();
+});
+
+test('the minimum of a room above the ceiling is told as such (review r2, minor 15)', async () => {
+  const device = created();
+  const target = device.features.find((f) => f.external_id === F('target-temperature'));
+  const world = fakeController({ devices: [DEVICE({ SollTempMinVal: '2500' })] });
+  const { app, start, cmd } = await setup({
+    devices: [device],
+    world,
+    config: { ...CONFIG, allow_setpoints: true },
+  });
+  await start();
+  const ack = await cmd(device, target, 20);
+  assert.match(
+    ack.error,
+    /Le minimum de cette pièce \(25 °C\) dépasse le plafond des consignes \(24 °C\)/,
+  );
+  app.stop();
+});
+
+test('a command delayed by a round request is told so, not by the queue (review r2, minor 16)', async () => {
+  const device = created();
+  const target = device.features.find((f) => f.external_id === F('target-temperature'));
+  const { app, gladys, start, clock, world, act } = await setup({
+    devices: [device],
+    config: { ...CONFIG, allow_setpoints: true },
+  });
+  await start();
+  clock.now += MINUTE;
+  // A round request answers slowly while two commands arrive: the first is
+  // refused because of the round, and so is the second, whose time went in
+  // the same round request (not in the first command).
+  world.cost = 4 * SECOND;
+  const run = app.tick();
+  const both = [gladys.fake.setValue(device, target, 21), gladys.fake.setValue(device, target, 20)];
+  const acks = await act(Promise.all(both));
+  await run;
+  for (const ack of acks) {
+    assert.match(ack.error, /Une lecture du régulateur était en cours/);
+  }
+  app.stop();
+});
+
 test('configuration of Gladys unreadable at start: new tries, a status, commands refused with the true reason (review r1, point 4)', async () => {
   const device = created();
   const target = device.features.find((f) => f.external_id === F('target-temperature'));
