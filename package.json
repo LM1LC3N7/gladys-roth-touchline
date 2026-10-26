@@ -1,6 +1,6 @@
 {
   "name": "gladys-roth-touchline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Gladys Assistant external integration for the Roth Touchline underfloor heating through its Ethernet controller (local CGI). Not affiliated with Roth.",
   "type": "module",

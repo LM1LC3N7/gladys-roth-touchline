@@ -6,8 +6,8 @@
     "en": "Roth Touchline underfloor heating (Ethernet controller): temperatures, setpoints, modes per room.",
     "fr": "Plancher chauffant Roth Touchline (contrôleur Ethernet) : températures, consignes, modes par pièce."
   },
-  "version": "0.1.1",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-roth-touchline:0.1.1",
+  "version": "0.1.2",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-roth-touchline:0.1.2",
   "gladys_version": ">=5.1.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-roth-touchline/main/cover.png",
   "categories": ["climate"],

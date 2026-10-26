@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-26
+
 ### Changed
 
 - Integration SDK 0.16 (no change for the devices).
@@ -39,5 +41,6 @@ the notes of the version's GitHub Release.
 - Device, feature and option names in French or English.
 - Distinct from Touchline SL (the cloud range): said in the docs.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-roth-touchline/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-roth-touchline/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-roth-touchline/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-roth-touchline/releases/tag/v0.1.1
