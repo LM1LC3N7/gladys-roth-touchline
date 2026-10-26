@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-26
+
 ### Added
 
 - Roth Touchline underfloor heating through its Ethernet controller (local
@@ -33,4 +35,5 @@ the notes of the version's GitHub Release.
 - Device, feature and option names in French or English.
 - Distinct from Touchline SL (the cloud range): said in the docs.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-roth-touchline/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-roth-touchline/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-roth-touchline/releases/tag/v0.1.1
